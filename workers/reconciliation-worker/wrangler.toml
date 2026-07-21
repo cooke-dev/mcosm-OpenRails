@@ -31,4 +31,6 @@ RELAY_CLAIMS_ENABLED = "true"
 # database_id = "replace-with-d1-database-id"
 
 [triggers]
-crons = ["*/10 * * * *"]
+# Cloudflare Cron Triggers can't go below 1-minute granularity — this is the fastest native
+# schedule available without moving to a Durable Object alarm() loop.
+crons = ["* * * * *"]

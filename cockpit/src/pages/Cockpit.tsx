@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useAccount } from "wagmi";
 import "../components/cockpit/responsive.css";
+import { useWalletConnection } from "../lib/useWalletConnection";
 import { ConnectWalletButton } from "../components/ConnectWalletButton";
 import { Sidebar, type CockpitView } from "../components/cockpit/Sidebar";
 import { Deck } from "../components/cockpit/Deck";
@@ -49,7 +49,7 @@ const TITLES: Record<CockpitView, [string, string]> = {
 };
 
 export default function Cockpit() {
-  const { address } = useAccount();
+  const { address } = useWalletConnection();
   const [active, setActive] = useState<CockpitView>("deck");
   const [collapsed, setCollapsed] = useState(false);
   const isMobile = useIsMobile();

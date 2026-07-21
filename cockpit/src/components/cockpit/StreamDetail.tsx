@@ -49,6 +49,17 @@ export function StreamDetail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vaultAddress, paycardId]);
 
+  // Auto-poll while the stream is still active — settlement only ever moves in response to a
+  // real on-chain SettlementFlushed event (no client-side estimation anywhere in this app), and
+  // without this a user watching the screen would never see it change unless they knew to click
+  // Refresh. Stops polling once the stream is no longer Active.
+  useEffect(() => {
+    if (state?.status !== "Active") return;
+    const interval = setInterval(() => load(true), 15000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultAddress, paycardId, state?.status]);
+
   const meta = state ? statusMeta(state.status, state.availableBalance) : null;
   const isPayer = connectedAddress && state && connectedAddress.toLowerCase() === state.payer.toLowerCase();
   const isRecipient = connectedAddress && state && connectedAddress.toLowerCase() === state.recipient.toLowerCase();

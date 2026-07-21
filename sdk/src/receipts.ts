@@ -1,3 +1,19 @@
+/**
+ * @module receipts
+ * @description Durable, typed, per-event-kind receipts (`OpenRailsReceipt`) — the richer of
+ * OpenRails' two proof vocabularies, meant for durable/user-facing records (e.g. the cockpit's
+ * receipt export). Each receipt type carries the full structured fields for that specific event.
+ *
+ * The other vocabulary, {@link module:proof}'s `ProofOfPayableV1`, is a single flexible shape
+ * covering every lifecycle stage with mostly-optional fields — meant for inline API responses
+ * where the exact stage isn't known statically (used by the legacy `server/index.ts`). Convert a
+ * receipt into that shape with {@link proofFromReceipt} in `./proof` when you need to interop
+ * with code expecting the lighter shape; there is no lossless conversion the other direction
+ * (`ProofOfPayableV1` doesn't carry the type-specific fields a receipt does).
+ *
+ * New integrations should generally reach for receipts, not proofs — they're the one with
+ * `parseReceipt`'s version/type/metadata-hash validation.
+ */
 import { type CanonicalMetadataV1, hashOpenRailsMetadata } from './metadata';
 
 export type OpenRailsReceiptType =

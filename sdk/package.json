@@ -32,6 +32,10 @@
       "types": "./dist/gateway.d.ts",
       "default": "./dist/gateway.js"
     },
+    "./agent": {
+      "types": "./dist/agent/index.d.ts",
+      "default": "./dist/agent/index.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {

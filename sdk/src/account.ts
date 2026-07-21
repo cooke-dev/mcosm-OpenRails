@@ -2,18 +2,25 @@
  * @module account
  * @description Pluggable account abstraction for OpenRails.
  *
- * OpenRails authenticates the *signature*, not the sender — the Hub recovers the
- * payer from an EIP-712 signature via `ecrecover` and never checks `msg.sender`.
- * So most accounts only need to **sign**; submission can be sponsored by a relayer
- * (see {@link module:relay}). That is why the interface is split in two:
+ * OpenRails authenticates the *signature*, not the sender — the Hub verifies the
+ * payer's EIP-712 signature and never checks `msg.sender`. So most accounts only
+ * need to **sign**; submission can be sponsored by a relayer (see
+ * {@link module:relay}). That is why the interface is split in two:
  *
  * - {@link OpenRailsAccount} — sign-only. Enough for gasless (relayed) opens/claims.
- *   Satisfied by embedded EOAs (Privy/Turnkey/Web3Auth) and server wallets.
+ *   Satisfied by embedded EOAs (Privy/Turnkey/Web3Auth), server wallets, and smart
+ *   contract accounts (e.g. Circle Smart Accounts — see `adapters/circle`).
  * - {@link OpenRailsSubmitter} — also submits its own transactions (self-submit path).
  *   Any `ethers.Signer` satisfies it.
  *
- * Because the Hub uses `ecrecover`, the signer must be an **EOA**. Smart-contract
- * (EIP-1271) accounts are deferred to V2.
+ * The V2 Hub (canonical, `2.0.0` domain) verifies signatures via OpenZeppelin's
+ * `SignatureChecker.isValidSignatureNow`, which accepts both plain ECDSA (EOA)
+ * signatures *and* EIP-1271 smart-contract-account signatures — no separate contract
+ * path needed. Set `isSmartAccount: true` on the account so the client skips the
+ * client-side ECDSA-recovery sanity check (which can't apply to an EIP-1271
+ * signature in the first place); the real verification still happens on-chain.
+ * The frozen V1 Hub (`1.0.0` domain, no longer accepting new opens) predates this
+ * and only ever supported raw `ecrecover`-based EOA signatures — don't target it.
  */
 import type { ethers } from 'ethers';
 

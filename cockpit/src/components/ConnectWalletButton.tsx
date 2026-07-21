@@ -13,8 +13,9 @@
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePrivy } from "@privy-io/react-auth";
-import { useAccount, useReadContract, useSwitchChain } from "wagmi";
+import { useReadContract, useSwitchChain } from "wagmi";
 import { USDC_ABI } from "../lib/contracts";
+import { useWalletConnection } from "../lib/useWalletConnection";
 
 const USDC = "0x3600000000000000000000000000000000000000";
 
@@ -30,8 +31,8 @@ function formatUsdc(raw: bigint | undefined): string {
 }
 
 export function ConnectWalletButton({ style }: { style?: CSSProperties }) {
-  const { ready, authenticated, login, logout } = usePrivy();
-  const { address, chainId } = useAccount();
+  const { login, logout } = usePrivy();
+  const { isConnected, address, chainId, ready } = useWalletConnection();
   const { switchChain } = useSwitchChain();
   const [menuOpen, setMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -82,7 +83,7 @@ export function ConnectWalletButton({ style }: { style?: CSSProperties }) {
     );
   }
 
-  if (authenticated && address) {
+  if (isConnected && address) {
     const isWrongNetwork = chainId !== 5042002;
     return (
       <div ref={wrapRef} style={{ position: "relative", display: "inline-block" }}>

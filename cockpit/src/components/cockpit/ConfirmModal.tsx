@@ -3,6 +3,7 @@ import { useWriteContract, usePublicClient } from "wagmi";
 import { HUB_ABI } from "../../lib/contracts";
 import { SecondaryButton, PrimaryButton } from "./Panel";
 import type { ToastState } from "./Toast";
+import { useWalletConnection } from "../../lib/useWalletConnection";
 
 export type ConfirmKind = "settle" | "flush";
 
@@ -17,6 +18,7 @@ export function ConfirmModal({
 }) {
   const { writeContractAsync } = useWriteContract();
   const publicClient = usePublicClient();
+  const { isConnected } = useWalletConnection();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -26,6 +28,13 @@ export function ConfirmModal({
 
   async function run() {
     if (!confirm) return;
+    // A wagmi-only reconnect can report a real address while Privy no longer considers the
+    // session authenticated (see useWalletConnection.ts) — don't let a stale session attempt
+    // a real write.
+    if (!isConnected) {
+      setError("Wallet session isn't active — reconnect and try again.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -78,7 +87,7 @@ export function ConfirmModal({
           </SecondaryButton>
           <PrimaryButton
             onClick={run}
-            disabled={busy}
+            disabled={busy || !isConnected}
             style={isFlush ? { background: busy ? "rgba(154,42,42,0.5)" : "#9A2A2A" } : undefined}
           >
             {busy ? "Submitting…" : isFlush ? "Flush residual" : "Settle"}

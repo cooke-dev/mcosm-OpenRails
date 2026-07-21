@@ -1,5 +1,11 @@
 # Integrate with OpenRails
 
+> **⚠️ Archived — describes the frozen V1 Hub and the legacy Express server (`server/index.ts`),
+> both superseded by V2. Start at [`GETTING_STARTED.md`](../GETTING_STARTED.md) instead — it covers
+> the current cockpit / SDK / CLI / MCP paths against the live V2 Hub
+> (`0x941C8029F0f912df3fAb7423890ab2359b996D0b`). This file is kept for historical reference only
+> and is not maintained.**
+
 OpenRails is intent-driven clearing & settlement for **streamed work on Arc** — a USDC payment
 rail for humans or agents: sign an intent → clear into a bounded onchain Vault → settle as work
 is performed → recover residual. Three ways to integrate: the **SDK/CLI**, the **agent skill**,

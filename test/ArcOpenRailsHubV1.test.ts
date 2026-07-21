@@ -9,7 +9,7 @@ import {
   hashSettlementIntent,
 } from "../sdk/src/client";
 import { evaluatePolicyEnvelope } from "../sdk/src/policy";
-import { buildIntentProof } from "../sdk/src/proof";
+import { buildIntentProof, buildTransactionProof, hashIntent, proofFromReceipt } from "../sdk/src/proof";
 import {
   buildMetadataBoundPaycardId,
   canonicalizeMetadata,
@@ -1506,6 +1506,96 @@ describe("ArcOpenRailsHubV1", () => {
       ...paymentReceipt,
       metadataHash: ethers.ZeroHash,
     })).to.throw("metadata does not match");
+  });
+
+  it("proofFromReceipt should convert every receipt type into the ProofOfPayableV1 shape", async () => {
+    const hubAddress = await clearinghouse.getAddress();
+    const tokenAddress = await mockUsdc.getAddress();
+    const metadata = {
+      version: "openrails-metadata-v1" as const,
+      mode: "railsflow" as const,
+      originator: payer.address,
+      recipient: recipient.address,
+      token: tokenAddress,
+      amount: ethers.parseUnits("7", 6).toString(),
+      flowVelocityPerSecond: ethers.parseUnits("1", 6).toString(),
+      lifespanSeconds: 30,
+      metadataRef: "receipt-proof-conversion",
+    };
+    const metadataHash = hashOpenRailsMetadata(metadata);
+    const paycardId = ethers.keccak256(ethers.toUtf8Bytes("receipt-proof-conversion-paycard"));
+
+    const paymentReceipt = createPaymentReceipt({
+      chainId, hub: hubAddress, token: tokenAddress, paycardId, metadataHash,
+      payer: payer.address, recipient: recipient.address,
+      txHash: ethers.keccak256(ethers.toUtf8Bytes("open-tx-2")), blockNumber: 42, issuedAt: 111,
+      totalAllocationPool: metadata.amount, flowVelocityPerSecond: metadata.flowVelocityPerSecond,
+      lifespanSeconds: metadata.lifespanSeconds, residualDeltaRecipient: recoveryVault.address,
+      nonceChannel: 1, nonceValue: 2, metadata,
+    });
+    const paymentProof = proofFromReceipt(paymentReceipt);
+    expect(paymentProof.stage).to.equal("opened_escrow");
+    expect(paymentProof.amount).to.equal(metadata.amount);
+    expect(paymentProof.txHash).to.equal(paymentReceipt.txHash);
+    expect(paymentProof.blockNumber).to.equal(42);
+    expect(paymentProof.createdAt).to.equal(111);
+    expect(paymentProof.mode).to.equal("railsflow");
+
+    const settlementReceipt = createSettlementReceipt({
+      chainId, hub: hubAddress, token: tokenAddress, paycardId, metadataHash,
+      payer: payer.address, recipient: recipient.address,
+      txHash: ethers.keccak256(ethers.toUtf8Bytes("settle-tx-2")),
+      settledAmount: ethers.parseUnits("2", 6).toString(), metadata,
+    });
+    const settlementProof = proofFromReceipt(settlementReceipt);
+    expect(settlementProof.stage).to.equal("settlement");
+    expect(settlementProof.amount).to.equal(ethers.parseUnits("2", 6).toString());
+
+    const residualReceipt = createResidualRecoveryReceipt({
+      chainId, hub: hubAddress, token: tokenAddress, paycardId, metadataHash,
+      payer: payer.address, recipient: recipient.address,
+      txHash: ethers.keccak256(ethers.toUtf8Bytes("flush-tx-2")),
+      recoveredAmount: ethers.parseUnits("5", 6).toString(), metadata,
+    });
+    const residualProof = proofFromReceipt(residualReceipt);
+    expect(residualProof.stage).to.equal("residual_reclaim");
+    expect(residualProof.amount).to.equal(ethers.parseUnits("5", 6).toString());
+    expect(residualProof.version).to.equal("openrails-proof-v1");
+    expect(residualProof.paycardId).to.equal(paycardId);
+  });
+
+  it("hashIntent delegates to hashSettlementIntent and buildTransactionProof stamps every field", async () => {
+    const hubAddress = await clearinghouse.getAddress();
+    const intent = buildIntent({
+      paycardId: ethers.keccak256(ethers.toUtf8Bytes("hash-intent-and-tx-proof")),
+    });
+
+    const viaHashIntent = hashIntent(intent, { chainId, verifyingContract: hubAddress });
+    const viaDirectHash = hashSettlementIntent(intent, chainId, hubAddress);
+    expect(viaHashIntent).to.equal(viaDirectHash);
+
+    const proof = buildTransactionProof({
+      stage: "opened_escrow",
+      paycardId: intent.paycardId,
+      txHash: ethers.keccak256(ethers.toUtf8Bytes("tx-proof-hash")),
+      blockNumber: 999,
+      payer: payer.address,
+      recipient: intent.recipient,
+      amount: intent.totalAllocationPool,
+      metadataHash: intent.metadataHash,
+      intentDigest: viaHashIntent,
+    });
+    expect(proof.version).to.equal("openrails-proof-v1");
+    expect(proof.stage).to.equal("opened_escrow");
+    expect(proof.paycardId).to.equal(intent.paycardId);
+    expect(proof.txHash).to.match(/^0x[0-9a-f]{64}$/);
+    expect(proof.blockNumber).to.equal(999);
+    expect(proof.payer).to.equal(payer.address);
+    expect(proof.recipient).to.equal(intent.recipient);
+    expect(proof.amount).to.equal(intent.totalAllocationPool);
+    expect(proof.metadataHash).to.equal(intent.metadataHash);
+    expect(proof.intentDigest).to.equal(viaHashIntent);
+    expect(typeof proof.createdAt).to.equal("number");
   });
 
   // =========================================================================

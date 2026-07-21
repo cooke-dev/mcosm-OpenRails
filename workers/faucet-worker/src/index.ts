@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { authorized } from "../../shared/auth";
 
 export interface Env {
   ARC_RPC_URL: string;
@@ -34,14 +35,6 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json", ...CORS_HEADERS },
   });
-}
-
-function authorized(request: Request, secret?: string): boolean {
-  if (!secret) return false;
-  const auth = request.headers.get("Authorization") || "";
-  const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-  const headerSecret = request.headers.get("X-OpenRails-Admin-Token") || "";
-  return bearer === secret || headerSecret === secret;
 }
 
 function isEvmAddress(value: string): boolean {
@@ -152,7 +145,7 @@ async function handleFund(request: Request, env: Env): Promise<Response> {
 
 async function handleStatus(request: Request, env: Env): Promise<Response> {
   if (!env.FAUCET_ADMIN_TOKEN) return jsonResponse({ error: "Faucet admin token is not configured" }, 503);
-  if (!authorized(request, env.FAUCET_ADMIN_TOKEN)) return jsonResponse({ error: "Unauthorized" }, 401);
+  if (!authorized(request, env.FAUCET_ADMIN_TOKEN, "X-OpenRails-Admin-Token")) return jsonResponse({ error: "Unauthorized" }, 401);
   if (!env.FAUCET_SIGNER_KEY) return jsonResponse({ error: "Faucet signer is not configured" }, 503);
 
   const provider = new ethers.JsonRpcProvider(env.ARC_RPC_URL);

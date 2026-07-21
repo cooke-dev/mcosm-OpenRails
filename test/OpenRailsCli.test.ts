@@ -38,8 +38,15 @@ describe("OpenRails CLI", () => {
 
     const command = await runCli(["close", "--help"]);
     expect(command.code).to.equal(0);
-    expect(command.stdout).to.include("Command help: close");
+    expect(command.stdout).to.include("openrails close");
     expect(command.stdout).to.include("--execute");
+    expect(command.stdout).to.include("--ack-irrevocable-close");
+    // per-command help must be command-specific, not the generic root listing
+    expect(command.stdout).to.not.include("request-stream");
+
+    const payStream = await runCli(["pay-stream", "--help"]);
+    expect(payStream.stdout).to.include("--total-allocation-pool");
+    expect(payStream.stdout).to.include("--sign-only");
   });
 
   it("rejects private key material on argv", () => {

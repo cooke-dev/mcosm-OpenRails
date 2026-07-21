@@ -1,6 +1,6 @@
 /**
  * @module index
- * @description Public barrel export for the OpenRails V1 SDK.
+ * @description Public barrel export for the OpenRails SDK.
  *
  * All arc-policy-envelope layer modules are re-exported here so consumers
  * can import from the package root:

@@ -10,6 +10,9 @@ Last recorded validation baseline:
 - `npx tsc --noEmit` passed.
 - Hardhat tests: 47 passing.
 - Foundry tests: 8 passing.
+  > **Historical snapshot, not current status.** These counts grow as the suite grows; treat
+  > `README.md`'s "Test baseline" line as authoritative for the current count and re-run
+  > `npm run test` / `npm run test:foundry` before relying on a number from this file.
 - `npx vite build dashboard --outDir /tmp/openrails-dashboard-build` passed.
 - `git diff --check` passed.
 

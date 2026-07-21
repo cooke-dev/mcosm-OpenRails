@@ -20,6 +20,16 @@ The live V2 contracts (already the default in every tool below):
 | USDC (native) | `0x3600000000000000000000000000000000000000` |
 | RPC | `https://rpc.testnet.arc.network` · chainId `5042002` |
 
+**Get testnet funds.** No wallet yet, or need a top-up? Hit the public faucet — it drips testnet
+USDC (which is also your gas) directly to any address, no signup:
+```bash
+curl -X POST https://openrails-faucet-worker.microcosm.workers.dev/fund \
+  -H "content-type: application/json" \
+  -d '{"address":"0xYourWallet"}'
+```
+Capped and rate-limited per address/IP; skips wallets that already hold enough. If you'd rather
+click a button, the cockpit's connect flow (Path A below) surfaces the same faucet.
+
 ---
 
 ## Path A — The cockpit (no install, easiest)

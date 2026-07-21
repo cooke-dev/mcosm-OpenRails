@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { authorized } from "../../shared/auth";
 
 export interface Env {
   STREAM_DB?: D1Database; // only used in the legacy "d1" settler mode
@@ -10,7 +11,7 @@ export interface Env {
   RECONCILIATION_ADMIN_TOKEN?: string;
   RECONCILIATION_BATCH_LIMIT?: string;
   MAX_SETTLEMENT_ATTEMPTS?: string;
-  SETTLER_MODE?: string; // "chain" (default) — settle all active rails; or "d1" — legacy plays table
+  SETTLER_MODE?: string; // "chain" (default) - settle all active rails; or "d1" - legacy plays table
   SETTLER_WINDOW_BLOCKS?: string; // getLogs lookback (default 9000; public RPC caps ~10k)
   MIN_ACCRUED_USDC?: string; // skip streaming settles below this accrued amount (default 0.0005)
   RELAY_CLAIMS_ENABLED?: string; // "true" (default) exposes the public gasless RailsCard claim relay
@@ -72,6 +73,10 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-OpenRails-Admin-Token",
 };
 
+const RELAY_RATE_LIMIT_WINDOW_MS = 60_000;
+const RELAY_RATE_LIMIT_MAX = 30;
+const relayRateLimits = new Map<string, { count: number; resetAt: number }>();
+
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -79,12 +84,28 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   });
 }
 
-function authorized(request: Request, secret?: string): boolean {
-  if (!secret) return false;
-  const auth = request.headers.get("Authorization") || "";
-  const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-  const headerSecret = request.headers.get("X-OpenRails-Admin-Token") || "";
-  return bearer === secret || headerSecret === secret;
+function checkRelayRateLimit(request: Request, route: string): Response | null {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const key = `${route}:${ip}`;
+  const now = Date.now();
+  if (relayRateLimits.size > 5000) {
+    for (const [entryKey, entry] of relayRateLimits.entries()) {
+      if (entry.resetAt <= now) relayRateLimits.delete(entryKey);
+    }
+  }
+  const current = relayRateLimits.get(key);
+  if (!current || current.resetAt <= now) {
+    relayRateLimits.set(key, { count: 1, resetAt: now + RELAY_RATE_LIMIT_WINDOW_MS });
+    return null;
+  }
+
+  if (current.count >= RELAY_RATE_LIMIT_MAX) {
+    const retryAfterSeconds = Math.ceil((current.resetAt - now) / 1000);
+    return jsonResponse({ error: "Relay rate limit exceeded", retryAfterSeconds }, 429);
+  }
+
+  current.count += 1;
+  return null;
 }
 
 function readPositiveInt(value: string | undefined, fallback: number): number {
@@ -105,11 +126,13 @@ export default {
       }
 
       // Public, gasless RailsCard claim relay: the keeper submits the claim on behalf of the
-      // holder so a recipient with zero gas can still claim. Non-custodial — escrow is pulled
+      // holder so a recipient with zero gas can still claim. Non-custodial - escrow is pulled
       // from the payer (who already signed); the keeper only pays gas and cannot redirect funds
       // beyond what the signed intent + claimant address allow.
       if (url.pathname === "/relay-claim") {
         if (request.method !== "POST") return jsonResponse({ error: "Only POST requests allowed" }, 405);
+        const limited = checkRelayRateLimit(request, url.pathname);
+        if (limited) return limited;
         return this.relayClaim(request, env);
       }
 
@@ -117,6 +140,8 @@ export default {
       // EIP-2612 permit so they never send an approval tx); the keeper submits both and pays gas.
       if (url.pathname === "/relay-open") {
         if (request.method !== "POST") return jsonResponse({ error: "Only POST requests allowed" }, 405);
+        const limited = checkRelayRateLimit(request, url.pathname);
+        if (limited) return limited;
         return this.relayOpen(request, env);
       }
 
@@ -128,7 +153,7 @@ export default {
         if (!env.RECONCILIATION_ADMIN_TOKEN) {
           return jsonResponse({ error: "Reconciliation admin token is not configured" }, 503);
         }
-        if (!authorized(request, env.RECONCILIATION_ADMIN_TOKEN)) {
+        if (!authorized(request, env.RECONCILIATION_ADMIN_TOKEN, "X-OpenRails-Admin-Token")) {
           return jsonResponse({ error: "Unauthorized" }, 401);
         }
         await this.reconcileStreams(env);
@@ -236,7 +261,7 @@ export default {
 
   // Sponsor a RailsFlow/stream open: the payer-signed envelope opens the channel; an optional
   // EIP-2612 permit lands the USDC approval first, so the payer sends no tx at all. Escrow is
-  // pulled from the recovered payer per the signed intent — non-custodial; the keeper pays gas.
+  // pulled from the recovered payer per the signed intent - non-custodial; the keeper pays gas.
   async relayOpen(request: Request, env: Env): Promise<Response> {
     if ((env.RELAY_CLAIMS_ENABLED ?? "true").toLowerCase() === "false") {
       return jsonResponse({ error: "Claim relay is disabled" }, 503);
@@ -334,7 +359,7 @@ export default {
   },
 
   // Generic rails settler: enumerate active Paycard Streams from chain and drip-settle them.
-  // The keeper ONLY settles (processDripSettle) — it never opens (openPaycardChannel) or closes
+  // The keeper ONLY settles (processDripSettle) - it never opens (openPaycardChannel) or closes
   // (flushResidualDelta); opening and closure stay with payer/merchant/creator. Permissionless +
   // non-custodial: funds always flow payer -> recipient per on-chain state; the keeper pays gas.
   async settleActiveRails(env: Env): Promise<void> {
@@ -365,7 +390,7 @@ export default {
         const lifespan = BigInt(s.lifespanSeconds);
         if (lifespan === 0n) {
           // One-time (instant): the full amount unlocks on the first settle. available > 0 means
-          // it hasn't been settled yet — settle it once. Afterwards available is 0 and it's skipped.
+          // it hasn't been settled yet - settle it once. Afterwards available is 0 and it's skipped.
         } else {
           // Streaming: only settle when accrued-since-checkpoint clears the dust threshold, so the
           // cron doesn't burn gas on negligible drips.
@@ -389,7 +414,7 @@ export default {
         console.error(`[settler] settle failed ${paycardId}:`, (error as Error).message?.slice(0, 300));
       }
     }
-    console.log(`[settler] done — settled ${settled}, skipped ${skipped}, errors ${errors}`);
+    console.log(`[settler] done - settled ${settled}, skipped ${skipped}, errors ${errors}`);
   },
 
   // Legacy mode: settle only paycards referenced by unsettled rows in the music "plays" D1 table.

@@ -13,6 +13,7 @@ deployments/openrails-v2-addresses.local.json
 .factory/
 circle-agent/
 .DS_Store
+*:Zone.Identifier
 *.docx
 *.docx.json
 
@@ -59,5 +60,3 @@ experiments/traction-bots/
 experiments/website_layout_and_narrative.md
 experiments/x402_showcase_guide.md
 experiments/Openrails-logo.jpg
-
-

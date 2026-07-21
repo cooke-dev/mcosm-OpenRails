@@ -1,7 +1,6 @@
 /**
  * @module client
- * @description Core EIP-712 signing client for the OpenRails V1
- * arc-policy-envelope layer.
+ * @description Core EIP-712 signing client for the current OpenRails permission-envelope layer.
  *
  * Produces cryptographic permission envelopes that authorize the on-chain
  * clearinghouse to stream funds from a payer's paycard to a recipient at a
@@ -39,7 +38,7 @@ export interface OpenRailsIntentV1 {
   recipient: string;
   /** Total allocation pool in base units (includes STN-Delta protective buffer). */
   totalAllocationPool: string;
-  /** Flow velocity R — consumption rate vector in base-units per second. */
+  /** Flow velocity R - consumption rate vector in base-units per second. */
   flowVelocityPerSecond: string;
   /** Epoch start time (unix seconds). */
   genesisTimestamp: number;
@@ -92,11 +91,28 @@ export const OPENRAILS_EIP712_TYPES = {
   ],
 };
 
+// Deployed hub addresses with a known-correct domain version, lowercased. Used only for the
+// friendlier early warning below - the contract itself is the real enforcement (a mismatched
+// domain version simply fails signature verification on-chain, per SignatureChecker).
+const KNOWN_HUB_DOMAIN_VERSIONS: Record<string, string> = {
+  '0x941c8029f0f912df3fab7423890ab2359b996d0b': '2.0.0', // V2 canonical hub
+  '0x01ec54846524d043fd808152d41596bef603381d': '1.0.0', // V1 hub (frozen, draining)
+};
+
 export function buildOpenRailsDomain(
   chainId: number,
   verifyingContract: string,
   version = '2.0.0', // V2 default; pass '1.0.0' to target the frozen/draining V1 hub
 ): ethers.TypedDataDomain {
+  const expectedVersion = KNOWN_HUB_DOMAIN_VERSIONS[verifyingContract.toLowerCase()];
+  if (expectedVersion && expectedVersion !== version) {
+    console.warn(
+      `[openrails-sdk] EIP-712 domain version "${version}" looks mismatched for hub ` +
+        `${verifyingContract} (expected "${expectedVersion}"). A mismatched domain will simply fail ` +
+        'signature verification on-chain - this warning just surfaces it earlier. Pass the intended ' +
+        'domain version explicitly if this is deliberate (e.g. deploying a new hub).',
+    );
+  }
   return {
     name: 'OpenRails Network',
     version,
@@ -163,7 +179,7 @@ export function inferEnvelopeModeFromIntent(intent: OpenRailsIntentV1): OpenRail
 // ---------------------------------------------------------------------------
 
 /**
- * High-level client for building, signing, and verifying OpenRails V1
+ * High-level client for building, signing, and verifying OpenRails
  * permission envelopes.
  *
  * @example
@@ -210,7 +226,7 @@ export class LeptonOpenRailsClient {
   }
 
   /**
-   * Construct a client from any {@link OpenRailsAccount} — an embedded wallet
+   * Construct a client from any {@link OpenRailsAccount} - an embedded wallet
    * (Privy/Turnkey), a server wallet, or an adapter-wrapped signer. This is the
    * seam that lets OpenRails onboard users/agents without a raw private key.
    *

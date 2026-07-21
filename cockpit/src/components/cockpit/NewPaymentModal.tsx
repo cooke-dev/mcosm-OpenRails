@@ -1,8 +1,35 @@
-import { useEffect, useState } from "react";
-import { useAccount } from "wagmi";
+import { Component, useEffect, useState, type ReactNode } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { PrimaryButton, SecondaryButton, TextInput, FieldLabel } from "./Panel";
 import { useNewPayment, type NewPaymentMode, type NewPaymentCardVariant, type NewPaymentType } from "../../lib/newPayment";
+import { truncateMiddle } from "../../lib/cockpitFormat";
+import { useWalletConnection } from "../../lib/useWalletConnection";
+
+/**
+ * QRCodeSVG throws synchronously ("Data too long") when the encoded value exceeds the QR
+ * spec's absolute capacity for the chosen error-correction level - a real RailsCard link
+ * (full signed envelope + EIP-2612 permit, base64, double-JSON-nested) can run ~2.3-2.5k
+ * characters, which is at or past that ceiling. Without a boundary, that throw unmounts
+ * this whole modal (the dark backdrop is all that's left, reading as a "black" crash).
+ * Copy/Share still work off the same full-length `link` string regardless of whether the
+ * QR itself can render, so this only needs to degrade the QR, not the whole modal.
+ */
+class QRBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    if (this.state.failed) {
+      return (
+        <div style={{ width: 132, height: 132, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", fontFamily: "'JetBrains Mono', monospace", fontSize: 10, lineHeight: 1.5, color: "rgba(11,17,32,0.5)", background: "rgba(11,17,32,0.04)", border: "1px dashed rgba(11,17,32,0.15)", borderRadius: 8, padding: 8 }}>
+          Too long for a QR code - use Copy or Share
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function SegButton({ active, children, onClick }: { active: boolean; children: React.ReactNode; onClick: () => void }) {
   return (
@@ -40,8 +67,13 @@ export function NewPaymentModal({
   usdc: string;
   onSuccess: (paycardId: string) => void;
 }) {
-  const { isConnected } = useAccount();
-  const { status, busy, submit, generateLink, reset } = useNewPayment(hub, usdc);
+  const { isConnected } = useWalletConnection();
+  const { status, busy, balanceLoading, submit, generateLink, reset } = useNewPayment(hub, usdc);
+  // Block generate/submit while the connected wallet's balance is still resolving - otherwise
+  // the amount-vs-balance check in newPayment.ts's validate() silently no-ops (balance is
+  // undefined until this read resolves), so a fast click right after opening the modal would
+  // bypass it every time.
+  const checkingBalance = isConnected && balanceLoading;
 
   const [mode, setMode] = useState<NewPaymentMode>("railsflow");
   const [cardVariant, setCardVariant] = useState<NewPaymentCardVariant>("bearer");
@@ -63,7 +95,7 @@ export function NewPaymentModal({
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
-      /* clipboard unavailable — no-op */
+      /* clipboard unavailable - no-op */
     }
   }
 
@@ -71,7 +103,7 @@ export function NewPaymentModal({
     try {
       await navigator.share({ url: link, title: "OpenRails payment link", text: "Open this OpenRails link to pay or claim." });
     } catch {
-      /* user cancelled or share failed — no-op */
+      /* user cancelled or share failed - no-op */
     }
   }
 
@@ -89,6 +121,18 @@ export function NewPaymentModal({
     if (status.id === "success") onSuccess(status.paycardId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
+
+  // A previously-generated link/QR encodes a snapshot of the form at the moment it was
+  // signed - if the user then edits any field, that display would silently go stale
+  // (still showing terms nobody actually re-signed). Clear it so "Generate link" is
+  // required again for the edited terms, rather than auto-resigning on every keystroke
+  // (which would spam wallet signature prompts for RailsCard).
+  useEffect(() => {
+    setLink("");
+    setLinkError("");
+    setCopied(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, cardVariant, type, party, amount, velocity, lifespan, memo]);
 
   if (!open) return null;
 
@@ -130,7 +174,7 @@ export function NewPaymentModal({
           </div>
           <div style={{ marginTop: 8, fontSize: 12.5, lineHeight: 1.55, color: "rgba(11,17,32,0.55)" }}>
             {mode === "railsflow"
-              ? "A request link — whoever opens it becomes the payer and signs."
+              ? "A request link - whoever opens it becomes the payer and signs."
               : "A payer-signed value link, pre-funded, claimable by the holder."}
           </div>
 
@@ -143,7 +187,7 @@ export function NewPaymentModal({
               </div>
               <div style={{ marginTop: 9, fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, lineHeight: 1.5, color: "rgba(11,17,32,0.5)" }}>
                 {cardVariant === "bearer"
-                  ? "First valid claimant binds — treat the unclaimed link as sensitive."
+                  ? "First valid claimant binds - treat the unclaimed link as sensitive."
                   : "Locked to one specific address at signing time."}
               </div>
             </div>
@@ -194,13 +238,15 @@ export function NewPaymentModal({
             <div style={{ marginTop: 14, background: "rgba(0,158,96,0.06)", border: "1px solid rgba(0,158,96,0.25)", borderRadius: 12, padding: 14 }}>
               <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
                 <div style={{ flex: "0 0 auto", background: "#FFFFFF", border: "1px solid rgba(11,17,32,0.1)", borderRadius: 12, padding: 10, lineHeight: 0 }}>
-                  <QRCodeSVG value={link} size={132} level="M" marginSize={0} />
+                  <QRBoundary key={link}>
+                    <QRCodeSVG value={link} size={132} level="L" marginSize={0} />
+                  </QRBoundary>
                 </div>
                 <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
                   <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(11,17,32,0.42)" }}>
                     Shareable link
                   </div>
-                  {/* Displayed text is visually truncated (max-height + break) — copy/share/QR use the FULL untruncated `link`. */}
+                  {/* Displayed text is truncated - copy/share/QR always use the FULL untruncated `link`. */}
                   <div
                     style={{
                       fontFamily: "'JetBrains Mono', monospace",
@@ -208,17 +254,13 @@ export function NewPaymentModal({
                       lineHeight: 1.55,
                       color: "#0B1120",
                       wordBreak: "break-all",
-                      overflow: "hidden",
-                      maxHeight: 68,
-                      maskImage: "linear-gradient(180deg, #000 62%, transparent 100%)",
-                      WebkitMaskImage: "linear-gradient(180deg, #000 62%, transparent 100%)",
                       background: "rgba(255,255,255,0.6)",
                       border: "1px solid rgba(11,17,32,0.08)",
                       borderRadius: 8,
                       padding: "9px 11px",
                     }}
                   >
-                    {link}
+                    {truncateMiddle(link)}
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button
@@ -269,18 +311,18 @@ export function NewPaymentModal({
         <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "16px 24px", borderTop: "1px solid rgba(11,17,32,0.07)" }}>
           <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "rgba(11,17,32,0.42)" }}>
-              {!isConnected ? "Connect a wallet first" : busy ? statusLabel(status) : ""}
+              {!isConnected ? "Connect a wallet first" : checkingBalance ? "Checking balance…" : busy ? statusLabel(status) : ""}
             </div>
             <div style={{ display: "flex", gap: 9 }}>
-              <SecondaryButton onClick={handleGenerateLink} disabled={!isConnected && mode !== "railsflow"}>
-                Generate link
+              <SecondaryButton onClick={handleGenerateLink} disabled={(!isConnected && mode !== "railsflow") || checkingBalance}>
+                {checkingBalance ? "Checking balance…" : "Generate link"}
               </SecondaryButton>
-              <PrimaryButton onClick={() => submit(params, "gasless")} disabled={busy || !isConnected || isBearer}>
-                {busy ? statusLabel(status) : "Pay · gas sponsored"}
+              <PrimaryButton onClick={() => submit(params, "gasless")} disabled={busy || !isConnected || isBearer || checkingBalance}>
+                {checkingBalance ? "Checking balance…" : busy ? statusLabel(status) : "Pay · gas sponsored"}
               </PrimaryButton>
             </div>
           </div>
-          {!busy && isConnected && !isBearer && (
+          {!busy && !checkingBalance && isConnected && !isBearer && (
             <button
               type="button"
               onClick={() => submit(params, "self-submit")}

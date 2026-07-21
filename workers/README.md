@@ -83,9 +83,25 @@ keeper only pays gas.
    npx wrangler deploy --dry-run   # bundle check, no deploy
    npx wrangler deploy
    ```
-3. Runs every 10 minutes (`crons = ["*/10 * * * *"]`); tune interval, `MIN_ACCRUED_USDC`,
+3. Runs every minute (`crons = ["* * * * *"]` — Cloudflare Cron Triggers can't go below 1-minute
+   granularity, this is the fastest native schedule available); tune interval, `MIN_ACCRUED_USDC`,
    `RECONCILIATION_BATCH_LIMIT`, and `SETTLER_WINDOW_BLOCKS` in `wrangler.toml`. Trigger manually
    with an authenticated `POST /reconcile` when `RECONCILIATION_ADMIN_TOKEN` is set.
+
+**This worker also exposes two public, unauthenticated gasless-relay endpoints** (safety comes
+from the envelope's own cryptographic signature, not caller identity — same non-custodial model as
+everything else in this project):
+
+- **`POST /relay-claim`** — sponsors gas for a RailsCard claim. Body: `{ envelopeToken, claimRecipient? }`.
+  Decodes the signed envelope, does a `staticCall` precheck (returns `409` if the claim would
+  revert — e.g. already claimed — rather than burning gas or silently double-processing), then
+  submits `claimWildcardPaycardChannel`/`openPaycardChannel` on the caller's behalf. This is what
+  the SDK's `claimGasless()` (`sdk/src/relay.ts`) calls under the hood. Toggle:
+  `RELAY_CLAIMS_ENABLED` (default `true`).
+- **`POST /relay-open`** — sponsors gas for a RailsFlow/stream open. Body:
+  `{ envelopeToken, permit? }` (an optional EIP-2612 permit lands the approval gaslessly too).
+  Same `staticCall`-precheck-then-submit pattern; requires a fixed recipient (rejects wildcard).
+  What the SDK's `payGasless()` calls under the hood. Same `RELAY_CLAIMS_ENABLED` toggle.
 
 ### C. Deploy the Indexer Worker (`indexer-worker`)
 

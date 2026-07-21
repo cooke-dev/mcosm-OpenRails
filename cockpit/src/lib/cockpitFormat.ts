@@ -16,6 +16,13 @@ export function shortHex(a: string | undefined | null, lead = 6, tail = 4): stri
   return `${a.slice(0, lead)}…${a.slice(-tail)}`;
 }
 
+/** Truncates an arbitrary long string (e.g. a generated link) for display only - never use
+ * the result for copy/share/QR, which must always use the full untruncated value. */
+export function truncateMiddle(s: string, lead = 42, tail = 24): string {
+  if (s.length <= lead + tail + 1) return s;
+  return `${s.slice(0, lead)}…${s.slice(-tail)}`;
+}
+
 export function fmtUsdcBase(baseUnits: string | bigint | undefined | null, dp = 6): string {
   if (baseUnits == null) return "—";
   const n = typeof baseUnits === "bigint" ? baseUnits : BigInt(baseUnits || "0");
@@ -66,7 +73,7 @@ export interface ReceiptTypeMeta {
   icon: string;
 }
 
-/** Canonical receipt type — maps 1:1 to sdk/src/receipts.ts <-> indexer event names. */
+/** Canonical receipt type - maps 1:1 to sdk/src/receipts.ts <-> indexer event names. */
 export function receiptTypeMeta(eventName: string): ReceiptTypeMeta {
   if (eventName === "PaycardProvisioned") {
     return { id: "payment_opened", label: "Opened", color: "#00794A", bg: "rgba(0,158,96,0.1)", bd: "rgba(0,158,96,0.3)", icon: "＋" };

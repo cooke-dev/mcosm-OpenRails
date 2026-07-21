@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { authorized } from "../../shared/auth";
 
 export interface Env {
   STREAM_DB: D1Database;
@@ -37,14 +38,6 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json", ...CORS_HEADERS },
   });
-}
-
-function authorized(request: Request, secret?: string): boolean {
-  if (!secret) return false;
-  const auth = request.headers.get("Authorization") || "";
-  const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-  const headerSecret = request.headers.get("X-OpenRails-Admin-Token") || "";
-  return bearer === secret || headerSecret === secret;
 }
 
 function readPositiveInt(value: string | undefined, fallback: number): number {
@@ -475,7 +468,7 @@ export default {
       if (url.pathname === "/tick") {
         if (request.method !== "POST") return jsonResponse({ error: "Only POST requests allowed" }, 405);
         if (!env.INDEXER_ADMIN_TOKEN) return jsonResponse({ error: "Indexer admin token is not configured" }, 503);
-        if (!authorized(request, env.INDEXER_ADMIN_TOKEN)) return jsonResponse({ error: "Unauthorized" }, 401);
+        if (!authorized(request, env.INDEXER_ADMIN_TOKEN, "X-OpenRails-Admin-Token")) return jsonResponse({ error: "Unauthorized" }, 401);
         const result = await runTick(env);
         return jsonResponse({ success: true, ...result });
       }

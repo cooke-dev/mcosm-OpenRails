@@ -23,7 +23,10 @@ import {
 } from './tools.js';
 
 const ctx = buildContext();
-const server = new McpServer({ name: 'openrails-mcp', version: '0.1.0' });
+const server = new McpServer({ name: 'openrails-mcp', version: '0.1.1' });
+server.server.onerror = (err) => {
+  console.error('openrails-mcp protocol error:', err);
+};
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
@@ -55,7 +58,7 @@ server.registerTool(
   'pay_link',
   {
     description:
-      'Pay an OpenRails link. A RailsFlow request → the server pays it (gasless open, signer becomes payer). A RailsCard link → the server claims it to the signer address. Returns the tx hash.',
+      'Pay an OpenRails link. A RailsFlow request → the server pays it (gasless open, signer becomes payer, subject to the MCP_MAX_AMOUNT_USDC per-call cap). A RailsCard link → the server claims it to the signer address (uncapped - claiming spends the original payer\'s pre-authorized funds, not the caller\'s). Identical retries within a few minutes replay the cached result instead of signing a second authorization. Returns the tx hash.',
     inputSchema: { link: z.string().describe('An OpenRails link URL or raw #or= token (RailsFlow request or RailsCard).') },
   },
   async ({ link }) => run(() => payLink(ctx, { link })),
@@ -68,9 +71,9 @@ server.registerTool(
     inputSchema: {
       amount: z.string().describe('Amount in USDC base units (6dp), e.g. "3000" = 0.003 USDC.'),
       recipient: z.string().optional().describe('Address to receive funds (defaults to the server signer).'),
-      oneTime: z.boolean().optional().describe('true = paid in full once; false/omitted = streaming (needs velocity/lifespan).'),
-      velocityPerSecond: z.string().optional().describe('Streaming: USDC base units per second.'),
-      lifespanSeconds: z.number().optional().describe('Streaming: duration in seconds.'),
+      oneTime: z.boolean().optional().describe('true/omitted = paid in full once; false = streaming and requires velocity/lifespan.'),
+      velocityPerSecond: z.string().optional().describe('Required when oneTime is false. USDC base units per second.'),
+      lifespanSeconds: z.number().optional().describe('Required when oneTime is false. Duration in seconds.'),
     },
   },
   async (args) => run(() => createRequestLink(ctx, args)),
@@ -80,14 +83,15 @@ server.registerTool(
   'issue_railscard',
   {
     description:
-      'Issue a claimable RailsCard link (the server is the payer, pre-signs the intent). Returns a claim link and paycardId. Escrow is pulled from the payer on claim.',
+      'Issue a claimable RailsCard link (the server is the payer, pre-signs the intent). Returns a claim link and paycardId. Escrow is pulled from the payer on claim. Amount is subject to the MCP_MAX_AMOUNT_USDC per-call cap. Identical retries within a few minutes replay the cached result instead of signing a second standing authorization. mode "bearer" (default) is a standing, anyone-with-the-link pull-authorization - first claimant wins, no recipient check - and REQUIRES acknowledgeBearerRisk: true; prefer recipient_bound when the claimant is known.',
     inputSchema: {
       amount: z.string().describe('Amount in USDC base units (6dp).'),
-      mode: z.enum(['bearer', 'recipient_bound']).optional().describe('bearer = anyone with the link claims (default); recipient_bound = fixed recipient.'),
+      mode: z.enum(['bearer', 'recipient_bound']).optional().describe('bearer = anyone with the link claims (default, requires acknowledgeBearerRisk: true); recipient_bound = fixed recipient.'),
       recipient: z.string().optional().describe('Required for recipient_bound.'),
       oneTime: z.boolean().optional().describe('true (default) = full amount once; false = streaming.'),
       velocityPerSecond: z.string().optional(),
       lifespanSeconds: z.number().optional(),
+      acknowledgeBearerRisk: z.boolean().optional().describe('Required (true) when mode is "bearer" (or omitted): confirms you intend a standing, anyone-can-claim authorization.'),
     },
   },
   async (args) => run(() => issueRailscard(ctx, args)),
@@ -104,7 +108,9 @@ server.registerTool(
 
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
+  process.stdin.resume();
   await server.connect(transport);
+  setInterval(() => undefined, 60_000);
   // stderr is safe for logs (stdout is the MCP channel).
   console.error(`openrails-mcp ready · ${ctx.config.networkMode} · signer ${ctx.signerAddress ?? '(read-only)'}`);
 }

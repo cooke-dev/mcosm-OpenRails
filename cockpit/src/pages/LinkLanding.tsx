@@ -10,8 +10,7 @@
  */
 import { useMemo } from "react";
 import { motion } from "framer-motion";
-import { Link } from "react-router-dom";
-import { useAccount } from "wagmi";
+import { Link, useLocation } from "react-router-dom";
 import { ConnectWalletButton } from "../components/ConnectWalletButton";
 import { revealParent, revealChild } from "../components/Glass";
 import { Panel, PrimaryButton } from "../components/cockpit/Panel";
@@ -24,6 +23,7 @@ import {
 } from "../lib/links";
 import { deserializeEnvelope, type CryptographicEnvelopeV1 } from "../lib/intents";
 import { useRailsActions } from "../lib/useRailsActions";
+import { useWalletConnection } from "../lib/useWalletConnection";
 
 const MONO = "'JetBrains Mono', monospace";
 const PAGE_BG = "radial-gradient(120% 100% at 100% 0%, #FDFEFF 0%, #EDF0F4 55%, #E4E8EE 100%)";
@@ -105,9 +105,15 @@ function DefRow({ label, value, valueColor }: { label: string; value: string; va
 }
 
 export default function LinkLanding() {
-  const { isConnected } = useAccount();
+  const { isConnected, address } = useWalletConnection();
   const { config, status, busy, act, claimRailsCard, claimRailsCardSponsored, payRailsFlowSponsored, reset } = useRailsActions();
+  const location = useLocation();
 
+  // Re-parse on every hash change, not just at mount — /openrails/flow and /openrails/card
+  // both render this same component keyed only by the URL fragment (#or=<token>), and
+  // navigating to a new fragment on the same path is a same-document navigation (no reload,
+  // no remount). Without location.hash as a dependency, a second link opened in an
+  // already-open tab would keep showing the first link's terms.
   const parsed = useMemo(() => {
     try {
       const artifact = parseOpenRailsLink(window.location.href);
@@ -115,7 +121,8 @@ export default function LinkLanding() {
     } catch (e) {
       return { artifact: null, terms: null, error: e instanceof Error ? e.message : String(e) };
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.hash]);
 
   const explorer = config?.explorerBaseUrl ?? "https://testnet.arcscan.app";
 
@@ -282,6 +289,21 @@ export default function LinkLanding() {
                   </div>
                 ) : (
                   <>
+                    {/* A wallet can already be connected here purely from a persisted Privy
+                        session (same browser used before) — without this, jumping straight to
+                        the claim/pay button can wrongly read as "no wallet was needed." The
+                        header's ConnectWalletButton already covers switching/disconnecting, so
+                        this is just a plain confirmation line, not a second copy of that widget. */}
+                    <div
+                      style={{
+                        marginBottom: 10,
+                        fontFamily: MONO,
+                        fontSize: 11,
+                        color: INK_FAINT,
+                      }}
+                    >
+                      Connected as <span style={{ color: INK }}>{shortHex(address!, 8, 6)}</span>
+                    </div>
                     <PrimaryButton
                       onClick={() =>
                         parsed.terms!.kind === "railscard"

@@ -44,20 +44,30 @@ to new opens and left to drain.
 | Agent server | [`openrails-mcp`](https://www.npmjs.com/package/openrails-mcp) (npm) |
 
 **What's shipped:** EIP-1271 **smart accounts** *and* EOAs (humans via embedded wallets, agents via
-server wallets); **gasless** relaying via the keeper worker; streaming + instant settlement; automatic
+server wallets) — including a real, live proof of a Circle-Smart-Account-style EIP-1271 open +
+settle against the deployed V2 Hub on Arc testnet, not just a local mock (real tx hashes:
+[`experiments/circle-sa-live-proof/results.md`](experiments/circle-sa-live-proof/results.md));
+**gasless** relaying via the keeper worker; streaming + instant settlement; automatic
 residual return; on-chain receipts; a published SDK/CLI and MCP server; a deployed cockpit at
-[openrails.pages.dev](https://openrails.pages.dev). Test baseline: **74 Hardhat + 9 Foundry** passing.
+[openrails.pages.dev](https://openrails.pages.dev). Test baseline: **90 Hardhat + 9 Foundry** passing.
 
-**Not yet:** mainnet, a security audit, session keys, USDC paymaster / Circle Gateway, and a real
-Circle Smart Account end-to-end (the contract accepts EIP-1271 today; the Circle-specific adapter is
-next). See [`HANDOFF.md`](HANDOFF.md) for the full roadmap.
+**Not yet:** mainnet, a security audit, session keys, USDC paymaster, and Circle's own Smart
+Account factory/session-key/paymaster infrastructure specifically (the Hub's EIP-1271 verification
+is proven live; Circle's own deployed infra hasn't been wired in yet). See [`HANDOFF.md`](HANDOFF.md)
+for the full roadmap.
 
 ---
 
 ## Quick start
 
-The fastest paths need no repo checkout — the packages default to Arc-testnet-V2. Full walkthrough in
-[`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Start here.** Want to just use it? → **Cockpit** (no install). Building an app or bot? → **SDK**
+(library, pluggable signers). Scripting or a one-off transaction? → **CLI**. Wiring up an AI agent?
+→ **MCP**. All four below hit the same live V2 Hub; pick one and go.
+
+The fastest paths need no repo checkout — the packages default to Arc-testnet-V2. No testnet USDC
+yet? See "Get testnet funds" in [`GETTING_STARTED.md`](GETTING_STARTED.md#0-what-you-need) — the
+faucet drips both escrow funds and gas (USDC is Arc's native gas token) to any address in one call.
+Full walkthrough in [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 **CLI (one command to a first payment):**
 ```bash
@@ -114,6 +124,9 @@ Settle    on Arc                 — USDC-native, fast, low-cost finality
   and sponsors gas for opens/claims (`/relay-open`, `/relay-claim`).
 - **Cockpit** (`cockpit/`): the React/Vite product surface.
 
+Every HTTP route across the legacy server and all 4 Cloudflare Workers — method, path, purpose,
+auth model — is in one table: [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md).
+
 ---
 
 ## Core mechanics
@@ -152,7 +165,7 @@ Receipts distinguish open, settlement, residual return, and workflow timelines.
 ```bash
 npm install
 npm run compile          # Hardhat compile (viaIR)
-npm run test             # Hardhat: 74 passing
+npm run test             # Hardhat: 90 passing
 npm run test:foundry     # Foundry fuzz/invariant: 9 passing
 npm run build:sdk        # tsc build of the SDK + CLI
 npm --prefix cockpit run build

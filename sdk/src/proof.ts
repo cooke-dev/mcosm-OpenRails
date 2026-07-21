@@ -1,3 +1,15 @@
+/**
+ * @module proof
+ * @description Lightweight, multi-stage proof shape (`ProofOfPayableV1`) — meant for inline API
+ * responses where the exact lifecycle stage isn't known statically (used by the legacy
+ * `server/index.ts`). Most fields are optional; unlike {@link module:receipts}' `OpenRailsReceipt`,
+ * there's no per-stage typed variant.
+ *
+ * See {@link module:receipts}'s module doc for when to reach for a receipt instead — new
+ * integrations generally should. {@link proofFromReceipt} converts a receipt into this shape when
+ * you need to interop with proof-shaped code; there's no lossless conversion back (a receipt's
+ * type-specific fields, e.g. `flowVelocityPerSecond` on a payment receipt, have no home here).
+ */
 import { ethers } from 'ethers';
 import {
   buildOpenRailsDomain,
@@ -9,6 +21,7 @@ import {
   type OpenRailsIntentV1,
 } from './client';
 import type { OpenRailsEnvelopeMode } from './metadata';
+import type { OpenRailsReceipt } from './receipts';
 
 export type ProofOfPayableStage =
   | 'signed_intent'
@@ -72,6 +85,43 @@ export function buildIntentProof(
       : undefined,
     mode,
     createdAt: Math.floor(Date.now() / 1000),
+  };
+}
+
+const RECEIPT_TYPE_TO_STAGE: Record<OpenRailsReceipt['type'], Exclude<ProofOfPayableStage, 'signed_intent'>> = {
+  payment_opened: 'opened_escrow',
+  settlement_processed: 'settlement',
+  residual_recovered: 'residual_reclaim',
+};
+
+function receiptAmount(receipt: OpenRailsReceipt): string | undefined {
+  switch (receipt.type) {
+    case 'payment_opened':
+      return receipt.totalAllocationPool;
+    case 'settlement_processed':
+      return receipt.settledAmount;
+    case 'residual_recovered':
+      return receipt.recoveredAmount;
+  }
+}
+
+/**
+ * Converts a durable {@link OpenRailsReceipt} into the lighter {@link ProofOfPayableV1} shape —
+ * one direction only; see this module's doc comment for why the reverse isn't lossless.
+ */
+export function proofFromReceipt(receipt: OpenRailsReceipt): ProofOfPayableV1 {
+  return {
+    version: 'openrails-proof-v1',
+    stage: RECEIPT_TYPE_TO_STAGE[receipt.type],
+    paycardId: receipt.paycardId,
+    payer: receipt.payer,
+    recipient: receipt.recipient,
+    metadataHash: receipt.metadataHash,
+    mode: receipt.metadata?.mode,
+    txHash: receipt.txHash,
+    blockNumber: receipt.blockNumber,
+    amount: receiptAmount(receipt),
+    createdAt: receipt.issuedAt,
   };
 }
 
