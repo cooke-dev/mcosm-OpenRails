@@ -193,6 +193,8 @@ export interface PactV1 {
   commercialTerms: Record<string, unknown>;
   paymentTerms: PaymentTermsV1;
   evidencePolicyId: string;
+  evidencePolicyVersion: string;
+  evidencePolicyCodeDigest: Hex;
   completionPolicyId: string;
   disputePolicyId: string;
   requiresCounterpartySignature: boolean;
@@ -228,6 +230,8 @@ export interface OpenRailsOpeningObservationV1 {
   flowVelocityBaseUnitsPerSecond: string;
   genesisTimestamp: number;
   lifespanSeconds: number;
+  availableBalanceBaseUnits: string;
+  operationalStatus: number;
   blockNumber: number;
   observedAt: IsoDate;
 }

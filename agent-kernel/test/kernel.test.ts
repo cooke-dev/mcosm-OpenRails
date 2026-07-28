@@ -42,6 +42,8 @@ const chainVerifier: OpenRailsChainVerifier = {
       flowVelocityBaseUnitsPerSecond: pact.paymentTerms.velocityBaseUnitsPerSecond,
       genesisTimestamp: pact.openRails.genesisTimestamp,
       lifespanSeconds: pact.paymentTerms.lifespanSeconds,
+      availableBalanceBaseUnits: pact.paymentTerms.maximumAllocationBaseUnits,
+      operationalStatus: 0,
       blockNumber: 1,
       observedAt: now().toISOString(),
     };
@@ -619,4 +621,329 @@ test("Gaia claims reject invalid signatures and non-party bindings", async () =>
     }),
     /respondent is not the opposing Pact party/,
   );
+});
+
+// second-security-review-adversarial-tests
+test("replayed Pact signatures are idempotent and cannot regress lifecycle state", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.signature-replay",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  const recorded = await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  const replay = await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  assert.equal(replay.signedAt, recorded.signedAt);
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash: hashCanonical("signature-replay-metadata"),
+    paycardId: hashCanonical("signature-replay-paycard"),
+    actor: authority,
+    genesisTimestamp: 1_722_165_000,
+    nonceChannel: 0,
+    nonceValue: 11,
+  });
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash: hashCanonical("signature-replay-metadata"),
+    paycardId: hashCanonical("signature-replay-paycard"),
+    actor: authority,
+    openingTxHash: hashCanonical("signature-replay-opening"),
+  });
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  assert.equal((await kernel.getPact(pact.pactId))?.status, "active");
+});
+
+test("canonical openings count against the Path period limit", async () => {
+  const { kernel, path } = await setup();
+  const current = await kernel.getPath(path.pathId);
+  await kernel.activatePath({
+    path: {
+      ...path,
+      revision: 2,
+      previousPathHash: current!.hash,
+      limits: { ...path.limits, maxPerPeriodBaseUnits: "6000000" },
+      updatedAt: "2026-07-28T12:01:00.000Z",
+    },
+    signature,
+  });
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const first = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.period-first",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  await kernel.signPact({ pactId: first.pactId, signer: authority, signature });
+  await kernel.bindOpenRailsPayment({
+    pactId: first.pactId,
+    metadataHash: hashCanonical("period-metadata"),
+    paycardId: hashCanonical("period-paycard"),
+    actor: authority,
+    genesisTimestamp: 1_722_165_000,
+    nonceChannel: 0,
+    nonceValue: 12,
+  });
+  await kernel.bindOpenRailsPayment({
+    pactId: first.pactId,
+    metadataHash: hashCanonical("period-metadata"),
+    paycardId: hashCanonical("period-paycard"),
+    actor: authority,
+    openingTxHash: hashCanonical("period-opening"),
+  });
+  await kernel.submitProposal(proposal({
+    proposalId: "proposal.period-second",
+    idempotencyKey: "proposal-period-second",
+    requestedAllocationBaseUnits: "2000000",
+  }));
+  const job = await kernel.runNextJob();
+  assert.equal(job?.state, "blocked");
+  assert.ok((await kernel.listBlockedActions("workspace.demo")).some((entry) => entry.reasonCodes.includes("PERIOD_LIMIT_EXCEEDED")));
+});
+
+test("completed but unsettled Pacts continue reserving active exposure", async () => {
+  const { kernel, path } = await setup();
+  const current = await kernel.getPath(path.pathId);
+  await kernel.activatePath({
+    path: {
+      ...path,
+      revision: 2,
+      previousPathHash: current!.hash,
+      limits: { ...path.limits, maxActiveExposureBaseUnits: "6000000" },
+      updatedAt: "2026-07-28T12:01:00.000Z",
+    },
+    signature,
+  });
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.completed-exposure",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  const paycardId = hashCanonical("completed-exposure-paycard");
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash: hashCanonical("completed-exposure-metadata"),
+    paycardId,
+    actor: authority,
+    genesisTimestamp: 1_722_165_000,
+    nonceChannel: 0,
+    nonceValue: 13,
+  });
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash: hashCanonical("completed-exposure-metadata"),
+    paycardId,
+    actor: authority,
+    openingTxHash: hashCanonical("completed-exposure-opening"),
+  });
+  const checkpoint: ExecutionCheckpointV1 = {
+    version: "openrails-work-checkpoint-v1",
+    checkpointId: "checkpoint.completed-exposure",
+    workspaceId: pact.workspaceId,
+    pactId: pact.pactId,
+    pathId: pact.pathId,
+    paycardId,
+    termsHash: pact.termsHash,
+    actor: provider,
+    counterparty: provider,
+    checkpointIndex: 1,
+    checkpointType: "completed",
+    evidenceType: "hash",
+    evidenceHash: hashCanonical("completed-exposure-evidence"),
+    observedAt: now().toISOString(),
+    validUntil: "2026-07-28T12:05:00.000Z",
+    submittedBy: provider,
+    signature,
+  };
+  await kernel.submitCheckpoint(checkpoint);
+  await kernel.verifyCheckpoint({ checkpointId: checkpoint.checkpointId, pluginId: pact.evidencePolicyId, pluginVersion: pact.evidencePolicyVersion });
+  assert.equal((await kernel.getPact(pact.pactId))?.status, "completed");
+  await kernel.submitProposal(proposal({
+    proposalId: "proposal.after-completion",
+    idempotencyKey: "proposal-after-completion",
+    requestedAllocationBaseUnits: "2000000",
+  }));
+  const job = await kernel.runNextJob();
+  assert.equal(job?.state, "blocked");
+  assert.ok((await kernel.listBlockedActions("workspace.demo")).some((entry) => entry.reasonCodes.includes("ACTIVE_EXPOSURE_EXCEEDED")));
+});
+
+test("payment preparation fails when the Pact Path is revised", async () => {
+  const { kernel, path } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.execution-eligibility",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  const current = await kernel.getPath(path.pathId);
+  await kernel.activatePath({
+    path: { ...path, revision: 2, previousPathHash: current!.hash, updatedAt: "2026-07-28T12:02:00.000Z" },
+    signature,
+  });
+  await assert.rejects(kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash: hashCanonical("eligibility-metadata"),
+    paycardId: hashCanonical("eligibility-paycard"),
+    actor: authority,
+    genesisTimestamp: 1_722_165_000,
+    nonceChannel: 0,
+    nonceValue: 14,
+  }), /stale Path revision/);
+});
+
+test("Pact verification policy snapshots plugin version and digest", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.proof-snapshot",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  assert.equal(pact.evidencePolicyId, "proof.hash");
+  assert.equal(pact.evidencePolicyVersion, "1.0.0");
+  assert.equal(pact.evidencePolicyCodeDigest, hashCanonical("hash-proof-v1"));
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  const paycardId = hashCanonical("proof-snapshot-paycard");
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash: hashCanonical("proof-snapshot-metadata"),
+    paycardId,
+    actor: authority,
+    genesisTimestamp: 1_722_165_000,
+    nonceChannel: 0,
+    nonceValue: 15,
+  });
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash: hashCanonical("proof-snapshot-metadata"),
+    paycardId,
+    actor: authority,
+    openingTxHash: hashCanonical("proof-snapshot-opening"),
+  });
+  const checkpoint: ExecutionCheckpointV1 = {
+    version: "openrails-work-checkpoint-v1",
+    checkpointId: "checkpoint.proof-snapshot",
+    workspaceId: pact.workspaceId,
+    pactId: pact.pactId,
+    pathId: pact.pathId,
+    paycardId,
+    termsHash: pact.termsHash,
+    actor: provider,
+    counterparty: provider,
+    checkpointIndex: 1,
+    checkpointType: "progress",
+    evidenceType: "hash",
+    evidenceHash: hashCanonical("proof-snapshot-evidence"),
+    observedAt: now().toISOString(),
+    validUntil: "2026-07-28T12:05:00.000Z",
+    submittedBy: provider,
+    signature,
+  };
+  await kernel.submitCheckpoint(checkpoint);
+  await assert.rejects(
+    kernel.verifyCheckpoint({ checkpointId: checkpoint.checkpointId, pluginId: "proof.hash", pluginVersion: "2.0.0" }),
+    /immutable Pact evidence policy/,
+  );
+});
+
+test("Gaia residual closure creates an obligation and cannot close the Pact offchain", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.gaia-closure",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  const gaia = await kernel.openGaiaCase({
+    caseId: "gaia.closure",
+    workspaceId: pact.workspaceId,
+    pactId: pact.pactId,
+    pathId: pact.pathId,
+    claimant: authority,
+    respondent: provider,
+    reasonCode: "CLOSE_REQUIRED",
+    evidenceCommitments: [hashCanonical("gaia-closure-evidence")],
+    paymentSnapshot: { observedAt: now().toISOString() },
+    requestedRemedy: "close residual",
+    resolutionPolicyId: "gaia.default",
+    claimValidUntil: "2026-07-28T12:05:00.000Z",
+    claimSignature: signature,
+  });
+  const payload = {
+    caseId: gaia.caseId,
+    resolver: authority,
+    decision: "close_and_return_residual" as const,
+    resolutionSummary: "Request canonical Paycard closure.",
+    rectificationTerms: {},
+  };
+  const command = await kernel.prepareWorkspaceCommand({ workspaceId: pact.workspaceId, operation: "resolve_gaia", payload });
+  const result = await kernel.resolveGaiaCase({ ...payload, command: command.command, signature });
+  assert.equal(result.gaiaCase.status, "rectification_required");
+  assert.equal(result.obligation?.remedyType, "manual_action");
+  assert.equal((await kernel.getPact(pact.pactId))?.status, "rectification_required");
+});
+
+test("Path revisions cannot transfer Workspace, owner, or authority", async () => {
+  const { kernel, path } = await setup();
+  const current = await kernel.getPath(path.pathId);
+  await assert.rejects(kernel.activatePath({
+    path: {
+      ...path,
+      owner: provider,
+      revision: 2,
+      previousPathHash: current!.hash,
+      updatedAt: "2026-07-28T12:03:00.000Z",
+    },
+    signature,
+  }), /owner cannot change|active Workspace owner/);
+});
+
+test("Proposal IDs are immutable independently of idempotency keys", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await assert.rejects(kernel.submitProposal(proposal({
+    idempotencyKey: "different-idempotency-key",
+    requestedDurationSeconds: 601,
+  })), /Proposal ID already exists/);
+});
+
+test("Agent Kernel V1 rejects non-EOA Workspace authority modes", async () => {
+  const kernel = new OpenRailsAgentKernel({ store: new MemoryKernelStore(), signatureVerifier: verifier, now });
+  assert.throws(() => kernel.prepareWorkspace({
+    workspaceId: "workspace.smart",
+    workspaceType: "organization",
+    displayName: "Smart Workspace",
+    principalId: "principal.smart",
+    authorityAccount: authority,
+    authorityType: "smart-account",
+  }), /EOA Workspace authorities only/);
 });

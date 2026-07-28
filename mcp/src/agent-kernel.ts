@@ -46,17 +46,19 @@ function requirePreparedPayment(pact: PactV1) {
   return pact.openRails;
 }
 
+async function assertCanonicalNetwork(ctx: OpenRailsContext): Promise<void> {
+  const network = await ctx.provider.getNetwork();
+  if (Number(network.chainId) !== GIWA_SEPOLIA.chainId) {
+    throw new Error(`GIWA chain mismatch: expected ${GIWA_SEPOLIA.chainId}, received ${network.chainId}`);
+  }
+}
+
 function createChainVerifier(ctx: OpenRailsContext): OpenRailsChainVerifier {
   const vault = new ethers.Contract(ctx.config.vaultAddress, openRailsAbi, ctx.provider);
 
-  async function assertNetwork(): Promise<void> {
-    const network = await ctx.provider.getNetwork();
-    if (Number(network.chainId) !== ctx.config.chainId) throw new Error(`GIWA chain mismatch: expected ${ctx.config.chainId}, received ${network.chainId}`);
-  }
-
   return {
     async verifyOpening(input): Promise<OpenRailsOpeningObservationV1> {
-      await assertNetwork();
+      await assertCanonicalNetwork(ctx);
       const prepared = requirePreparedPayment(input.pact);
       const receipt = await ctx.provider.getTransactionReceipt(input.openingTxHash);
       if (!receipt) throw new Error('opening transaction is not canonically confirmed on GIWA');
@@ -94,6 +96,9 @@ function createChainVerifier(ctx: OpenRailsContext): OpenRailsChainVerifier {
       if (asSafeNumber(card.genesisTimestamp, 'registry genesisTimestamp') !== prepared.genesisTimestamp) throw new Error('canonical Paycard genesis does not match the prepared payment');
       if (asSafeNumber(card.lifespanSeconds, 'registry lifespanSeconds') !== input.pact.paymentTerms.lifespanSeconds) throw new Error('canonical Paycard lifespan does not match the Pact');
       if (!sameAddress(card.residualDeltaRecipient, input.pact.paymentTerms.residualRecipient)) throw new Error('canonical Paycard residual recipient does not match the Pact');
+      const operationalStatus = asSafeNumber(card.operationalStatus, 'registry operationalStatus');
+      if (operationalStatus !== 0) throw new Error('canonical Paycard is no longer active');
+      if (card.availableBalance === 0n) throw new Error('canonical Paycard has no available balance');
 
       return {
         version: 'openrails-opening-observation-v1',
@@ -109,13 +114,15 @@ function createChainVerifier(ctx: OpenRailsContext): OpenRailsChainVerifier {
         flowVelocityBaseUnitsPerSecond: card.flowVelocityPerSecond.toString(),
         genesisTimestamp: asSafeNumber(card.genesisTimestamp, 'opening genesisTimestamp'),
         lifespanSeconds: asSafeNumber(card.lifespanSeconds, 'opening lifespanSeconds'),
+        availableBalanceBaseUnits: card.availableBalance.toString(),
+        operationalStatus,
         blockNumber: receipt.blockNumber,
         observedAt: new Date().toISOString(),
       };
     },
 
     async verifySettlement(input): Promise<OpenRailsSettlementObservationV1> {
-      await assertNetwork();
+      await assertCanonicalNetwork(ctx);
       const prepared = requirePreparedPayment(input.pact);
       const receipt = await ctx.provider.getTransactionReceipt(input.txHash);
       if (!receipt) throw new Error('settlement transaction is not canonically confirmed on GIWA');
@@ -172,6 +179,7 @@ export function buildAgentKernel(ctx: OpenRailsContext): {
 
   const identityResolver = new GiwaIdentityResolver({
     async isDojangVerified(address: Address) {
+      await assertCanonicalNetwork(ctx);
       const [verified, uid] = await Promise.all([
         dojang.isVerified(address, GIWA_SEPOLIA.upbitKoreaAttesterId) as Promise<boolean>,
         dojang.getVerifiedAddressAttestationUid(address, GIWA_SEPOLIA.upbitKoreaAttesterId) as Promise<string>,

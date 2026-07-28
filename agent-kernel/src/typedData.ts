@@ -112,6 +112,8 @@ export function pactTermsProjection(pact: PactV1): Record<string, unknown> {
     commercialTerms: pact.commercialTerms,
     paymentTerms: pact.paymentTerms,
     evidencePolicyId: pact.evidencePolicyId,
+    evidencePolicyVersion: pact.evidencePolicyVersion,
+    evidencePolicyCodeDigest: pact.evidencePolicyCodeDigest,
     completionPolicyId: pact.completionPolicyId,
     disputePolicyId: pact.disputePolicyId,
     requiresCounterpartySignature: pact.requiresCounterpartySignature,

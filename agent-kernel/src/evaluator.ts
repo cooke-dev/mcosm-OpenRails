@@ -20,8 +20,18 @@ export interface BaphometOptions {
 }
 
 function activePactsForPath(state: KernelStateV1, pathId: string) {
+  const exposureReservedStatuses = new Set([
+    "accepted",
+    "payment_prepared",
+    "awaiting_wallet",
+    "active",
+    "performing",
+    "completed",
+    "disputed",
+    "rectification_required",
+  ]);
   return Object.values(state.pacts).filter((pact) =>
-    pact.pathId === pathId && ["accepted", "payment_prepared", "awaiting_wallet", "active", "performing", "disputed", "rectification_required"].includes(pact.status),
+    pact.pathId === pathId && exposureReservedStatuses.has(pact.status),
   );
 }
 
@@ -35,7 +45,7 @@ function activeExposure(state: KernelStateV1, pathId: string): bigint {
 function periodSpent(state: KernelStateV1, path: PathV1, nowMs: number): bigint {
   const start = nowMs - path.limits.periodSeconds * 1000;
   return state.pactEvents
-    .filter((event) => event.workspaceId === path.workspaceId && event.type === "PAYMENT_OPENED" && Date.parse(event.at) >= start)
+    .filter((event) => event.workspaceId === path.workspaceId && event.type === "PAYMENT_OPENED_CANONICAL" && state.pacts[event.pactId]?.pathId === path.pathId && Date.parse(event.at) >= start)
     .reduce((sum, event) => {
       const value = event.data.allocationBaseUnits;
       return sum + (typeof value === "string" ? parseBaseUnits(value, "event allocation") : 0n);

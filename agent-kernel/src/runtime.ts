@@ -13,6 +13,7 @@ import {
 import { ActionRegistry } from "./actionRegistry.js";
 import { evaluateProposal, type CounterpartyIdentityResolver } from "./evaluator.js";
 import { VerificationPluginRegistry } from "./plugins.js";
+import { GIWA_SEPOLIA } from "./giwa.js";
 import type { KernelStore } from "./store.js";
 import {
   agentRegistrationTypedData,
@@ -110,6 +111,67 @@ function assertRevision(actual: number, expected: number, label: string): void {
   if (actual !== expected) throw new Error(`${label} revision conflict: expected ${expected}, found ${actual}`);
 }
 
+function sameAddress(left: Address, right: Address): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function assertPactExecutionEligible(state: KernelStateV1, pact: PactV1, nowMs: number): SignedArtifactV1<PathV1> {
+  assertPact(pact);
+  const workspace = requireWorkspace(state, pact.workspaceId);
+  if (workspace.status !== "active") throw new Error("Pact Workspace is not active");
+  const agent = requireAgent(state, pact.agentId);
+  if (agent.workspaceId !== workspace.workspaceId || agent.status !== "active") throw new Error("Pact Agent is not active in the Workspace");
+  const signedPath = requirePath(state, pact.pathId);
+  const path = signedPath.artifact;
+  if (signedPath.hash !== pact.pathHash || path.revision !== pact.pathRevision) throw new Error("Pact is bound to a stale Path revision");
+  if (path.status !== "active") throw new Error("Pact Path is not active");
+  if (parseIso(path.validFrom, "Path validFrom") > nowMs) throw new Error("Pact Path is not yet valid");
+  if (parseIso(path.expiresAt, "Path expiresAt") <= nowMs) throw new Error("Pact Path has expired");
+  if (!path.authorizedAgentIds.includes(pact.agentId)) throw new Error("Pact Agent is no longer authorized by the Path");
+  if (!path.permittedActions.includes(pact.actionType)) throw new Error("Pact action is no longer authorized by the Path");
+  if (!path.permittedAssets.some((asset) => sameAddress(asset, pact.paymentTerms.token))) throw new Error("Pact asset is no longer authorized by the Path");
+  if (path.permittedCounterparties?.length && !path.permittedCounterparties.some((entry) => sameAddress(entry, pact.counterparty))) {
+    throw new Error("Pact counterparty is no longer authorized by the Path");
+  }
+  return signedPath;
+}
+
+function assertOpeningObservationMatchesPact(
+  pact: PactV1,
+  metadataHash: Hex,
+  paycardId: Hex,
+  openingTxHash: Hex,
+  observation: OpenRailsOpeningObservationV1,
+): void {
+  if (observation.transactionHash.toLowerCase() !== openingTxHash.toLowerCase()) throw new Error("Opening observation transaction hash mismatch");
+  if (observation.chainId !== pact.paymentTerms.chainId) throw new Error("Opening observation chain mismatch");
+  if (!sameAddress(observation.vault, pact.paymentTerms.vault)) throw new Error("Opening observation vault mismatch");
+  if (observation.paycardId !== paycardId || observation.metadataHash !== metadataHash) throw new Error("Opening observation payment binding mismatch");
+  if (!sameAddress(observation.payer, pact.paymentTerms.payer)) throw new Error("Opening observation payer mismatch");
+  if (!sameAddress(observation.recipient, pact.paymentTerms.recipient)) throw new Error("Opening observation recipient mismatch");
+  if (!sameAddress(observation.residualRecipient, pact.paymentTerms.residualRecipient)) throw new Error("Opening observation residual recipient mismatch");
+  if (observation.poolAllocationBaseUnits !== pact.paymentTerms.maximumAllocationBaseUnits) throw new Error("Opening observation allocation mismatch");
+  if (observation.flowVelocityBaseUnitsPerSecond !== pact.paymentTerms.velocityBaseUnitsPerSecond) throw new Error("Opening observation velocity mismatch");
+  if (observation.lifespanSeconds !== pact.paymentTerms.lifespanSeconds) throw new Error("Opening observation lifespan mismatch");
+  if (observation.operationalStatus !== 0) throw new Error("Canonical Paycard is not active");
+  if (parseBaseUnits(observation.availableBalanceBaseUnits, "opening available balance") === 0n) throw new Error("Canonical Paycard has no available balance");
+}
+
+function assertSettlementObservationMatchesPact(
+  pact: PactV1,
+  txHash: Hex,
+  amount: string,
+  observation: OpenRailsSettlementObservationV1,
+): void {
+  if (!pact.openRails) throw new Error("Pact has no prepared OpenRails payment");
+  if (observation.transactionHash.toLowerCase() !== txHash.toLowerCase()) throw new Error("Settlement observation transaction hash mismatch");
+  if (observation.chainId !== pact.paymentTerms.chainId) throw new Error("Settlement observation chain mismatch");
+  if (!sameAddress(observation.vault, pact.paymentTerms.vault)) throw new Error("Settlement observation vault mismatch");
+  if (observation.paycardId !== pact.openRails.paycardId) throw new Error("Settlement observation Paycard mismatch");
+  if (!sameAddress(observation.recipient, pact.paymentTerms.recipient)) throw new Error("Settlement observation recipient mismatch");
+  if (observation.settledAmountBaseUnits !== amount) throw new Error("Settlement observation amount mismatch");
+}
+
 async function authorizeWorkspaceCommand(input: {
   state: KernelStateV1;
   command: WorkspaceCommandV1;
@@ -172,6 +234,7 @@ function assertWorkspace(workspace: WorkspaceV1): void {
   assertWorkspaceId(workspace.workspaceId);
   assertDomainId(workspace.principalId, "Principal ID");
   assertAddress(workspace.authorityAccount, "Workspace authority");
+  if (workspace.authorityType !== "eoa") throw new Error("Agent Kernel V1 supports EOA Workspace authorities only");
   if (!Number.isSafeInteger(workspace.revision) || workspace.revision < 1) throw new Error("Workspace revision must be positive");
   if (!Array.isArray(workspace.members) || workspace.members.length === 0) throw new Error("Workspace requires at least one member");
   if (!workspace.members.some((member) => member.status === "active" && member.roles.includes("owner") && member.address.toLowerCase() === workspace.authorityAccount.toLowerCase())) throw new Error("Workspace authority must be an active owner member");
@@ -281,6 +344,7 @@ export class OpenRailsAgentKernel {
   prepareWorkspace(input: Omit<WorkspaceV1, "version" | "revision" | "createdAt" | "updatedAt" | "members" | "status"> & { members?: WorkspaceV1["members"] }) {
     assertWorkspaceId(input.workspaceId);
     assertAddress(input.authorityAccount, "Workspace authority");
+    if (input.authorityType !== "eoa") throw new Error("Agent Kernel V1 supports EOA Workspace authorities only");
     const at = nowIso(this.now);
     const workspace: WorkspaceV1 = {
       version: "openrails-workspace-v1",
@@ -390,6 +454,12 @@ export class OpenRailsAgentKernel {
     return this.options.store.transact((state) => {
       const workspace = requireWorkspace(state, input.path.workspaceId);
       assertAuthority(workspace, input.path.authorityAccount);
+      const ownerMember = workspace.members.find((member) =>
+        member.address.toLowerCase() === input.path.owner.toLowerCase() &&
+        member.status === "active" &&
+        member.roles.includes("owner"),
+      );
+      if (!ownerMember) throw new Error("Path owner must be an active Workspace owner");
       for (const agentId of input.path.authorizedAgentIds) {
         const agent = requireAgent(state, agentId);
         if (agent.workspaceId !== workspace.workspaceId || agent.status !== "active") throw new Error(`Agent ${agentId} is not active in this Workspace`);
@@ -398,6 +468,9 @@ export class OpenRailsAgentKernel {
       if (existing) {
         assertRevision(input.path.revision, existing.artifact.revision + 1, "Path");
         if (input.path.previousPathHash !== existing.hash) throw new Error("Path previous hash mismatch");
+        if (input.path.workspaceId !== existing.artifact.workspaceId) throw new Error("Path Workspace cannot change across revisions");
+        if (!sameAddress(input.path.owner, existing.artifact.owner)) throw new Error("Path owner cannot change across revisions");
+        if (!sameAddress(input.path.authorityAccount, existing.artifact.authorityAccount)) throw new Error("Path authority cannot change across revisions");
       } else if (input.path.revision !== 1) throw new Error("New Path revision must be 1");
       const signed: SignedArtifactV1<PathV1> = {
         artifact: clone(input.path),
@@ -430,6 +503,9 @@ export class OpenRailsAgentKernel {
         if (!previousProposal || !previousJob) throw new Error("idempotency record is inconsistent");
         return { proposal: previousProposal, job: previousJob };
       }
+      const existingProposal = state.proposals[proposal.proposalId];
+      if (existingProposal && hashCanonical(existingProposal) !== fingerprint) throw new Error("Proposal ID already exists with different payload");
+      if (existingProposal) throw new Error("Proposal ID already exists");
       state.proposals[proposal.proposalId] = clone(proposal);
       const at = nowIso(this.now);
       const job: RuntimeJobV1 = {
@@ -541,6 +617,17 @@ export class OpenRailsAgentKernel {
       const proposalHash = hashCanonical(proposal);
       if (decision.proposalHash !== proposalHash) throw new Error("Baphomet decision proposal hash mismatch");
 
+      const approvedPlugin = signedPath.artifact.approvedVerificationPlugins.find((entry) => entry.pluginId === proposal.evidencePolicyId);
+      if (!approvedPlugin) throw new Error("Proposal evidence policy is not approved by the active Path");
+      const pluginKey = this.plugins.key(approvedPlugin.pluginId, approvedPlugin.version);
+      const pluginManifest = state.plugins[pluginKey];
+      if (!pluginManifest || pluginManifest.status !== "active") throw new Error("Pact evidence plugin is not active");
+      if (!pluginManifest.installedWorkspaceIds.includes(workspace.workspaceId)) throw new Error("Pact evidence plugin is not installed in the Workspace");
+      const pluginImplementation = this.plugins.get(approvedPlugin.pluginId, approvedPlugin.version);
+      if (!pluginImplementation || pluginImplementation.manifest.codeDigest !== pluginManifest.codeDigest) {
+        throw new Error("Pact evidence plugin implementation does not match its installed manifest");
+      }
+
       const at = nowIso(this.now);
       const pact: PactV1 = {
         version: "openrails-pact-v1",
@@ -561,8 +648,8 @@ export class OpenRailsAgentKernel {
         specification: clone(proposal.specification),
         commercialTerms: clone(input.commercialTerms),
         paymentTerms: {
-          chainId: 91_342,
-          vault: "0x623daf607A0C8F841a72012BCE19cfe9E5fbAbf1",
+          chainId: GIWA_SEPOLIA.chainId,
+          vault: GIWA_SEPOLIA.vaultAddress,
           token: proposal.asset,
           payer: workspace.authorityAccount,
           recipient: proposal.counterparty,
@@ -571,7 +658,9 @@ export class OpenRailsAgentKernel {
           lifespanSeconds: proposal.requestedDurationSeconds,
           residualRecipient: workspace.authorityAccount,
         },
-        evidencePolicyId: proposal.evidencePolicyId,
+        evidencePolicyId: approvedPlugin.pluginId,
+        evidencePolicyVersion: approvedPlugin.version,
+        evidencePolicyCodeDigest: pluginManifest.codeDigest,
         completionPolicyId: input.completionPolicyId,
         disputePolicyId: input.disputePolicyId,
         requiresCounterpartySignature: input.requiresCounterpartySignature ?? true,
@@ -606,12 +695,18 @@ export class OpenRailsAgentKernel {
       const workspace = requireWorkspace(state, pact.workspaceId);
       const allowed = input.signer.toLowerCase() === workspace.authorityAccount.toLowerCase() || input.signer.toLowerCase() === pact.counterparty.toLowerCase();
       if (!allowed) throw new Error("Pact signer is neither Workspace authority nor counterparty");
+      const signatures = state.pactSignatures[pact.pactId] ?? [];
+      const existing = signatures.find((entry) => entry.signer.toLowerCase() === input.signer.toLowerCase());
+      if (existing) {
+        if (existing.hash !== pact.termsHash || existing.signature !== input.signature) throw new Error("Pact signer already recorded a different signature");
+        return existing;
+      }
+      if (pact.status !== "awaiting_signatures") throw new Error("Pact is no longer accepting signatures");
       const typedData = pactTypedData(pact);
       const valid = await this.options.signatureVerifier.verify({ typedData, signature: input.signature, expectedSigner: input.signer });
       if (!valid) throw new Error("Pact signature is invalid");
       const signed: SignedArtifactV1<PactV1> = { artifact: clone(pact), hash: pact.termsHash, typedData, signer: input.signer, signature: input.signature, signedAt: nowIso(this.now) };
-      const signatures = state.pactSignatures[pact.pactId] ?? [];
-      if (!signatures.some((entry) => entry.signer.toLowerCase() === input.signer.toLowerCase())) signatures.push(signed);
+      signatures.push(signed);
       state.pactSignatures[pact.pactId] = signatures;
       const authoritySigned = signatures.some((entry) => entry.signer.toLowerCase() === workspace.authorityAccount.toLowerCase());
       const counterpartySigned = signatures.some((entry) => entry.signer.toLowerCase() === pact.counterparty.toLowerCase());
@@ -647,8 +742,8 @@ export class OpenRailsAgentKernel {
       if (!Number.isSafeInteger(input.nonceValue) || (input.nonceValue ?? -1) < 0) throw new Error("nonceValue is required for payment preparation");
       return this.options.store.transact((state) => {
         const pact = requirePact(state, input.pactId);
-        assertPact(pact);
-        if (!['accepted', 'payment_prepared', 'awaiting_wallet'].includes(pact.status)) throw new Error("Pact is not ready for OpenRails preparation");
+        assertPactExecutionEligible(state, pact, this.now().getTime());
+        if (!["accepted", "payment_prepared", "awaiting_wallet"].includes(pact.status)) throw new Error("Pact is not ready for OpenRails preparation");
         pact.openRails = {
           metadataHash: input.metadataHash,
           paycardId: input.paycardId,
@@ -675,8 +770,9 @@ export class OpenRailsAgentKernel {
     }
 
     if (!this.options.chainVerifier) throw new Error("Canonical OpenRails chain verifier is required to activate a Pact");
-    const before = requirePact(await this.state(), input.pactId);
-    assertPact(before);
+    const beforeState = await this.state();
+    const before = requirePact(beforeState, input.pactId);
+    assertPactExecutionEligible(beforeState, before, this.now().getTime());
     if (!before.openRails) throw new Error("Payment must be prepared before canonical opening verification");
     if (before.openRails.metadataHash !== input.metadataHash || before.openRails.paycardId !== input.paycardId) throw new Error("Opening transaction does not match the prepared Pact payment");
     const observation = await this.options.chainVerifier.verifyOpening({
@@ -685,13 +781,15 @@ export class OpenRailsAgentKernel {
       paycardId: input.paycardId,
       openingTxHash: input.openingTxHash,
     });
+    assertOpeningObservationMatchesPact(before, input.metadataHash, input.paycardId, input.openingTxHash, observation);
 
     return this.options.store.transact((state) => {
       const pact = requirePact(state, input.pactId);
-      assertPact(pact);
+      assertPactExecutionEligible(state, pact, this.now().getTime());
       if (!pact.openRails) throw new Error("Payment preparation disappeared before opening verification");
       if (!['payment_prepared', 'awaiting_wallet'].includes(pact.status)) throw new Error("Pact is not awaiting canonical OpenRails opening");
       if (pact.openRails.metadataHash !== input.metadataHash || pact.openRails.paycardId !== input.paycardId) throw new Error("Prepared payment changed during opening verification");
+      assertOpeningObservationMatchesPact(pact, input.metadataHash, input.paycardId, input.openingTxHash!, observation);
       pact.openRails.openingTxHash = input.openingTxHash!;
       pact.openRails.openingObservation = observation;
       pact.status = "active";
@@ -776,9 +874,15 @@ export class OpenRailsAgentKernel {
       const checkpoint = state.checkpoints[input.checkpointId];
       if (!checkpoint) throw new Error("checkpoint not found");
       const pact = requirePact(state, checkpoint.pactId);
-      const signedPath = requirePath(state, pact.pathId);
-      const allowed = signedPath.artifact.approvedVerificationPlugins.some((entry) => entry.pluginId === input.pluginId && entry.version === input.pluginVersion);
-      if (!allowed) throw new Error("plugin is not approved by the Pact Path");
+      if (input.pluginId !== pact.evidencePolicyId || input.pluginVersion !== pact.evidencePolicyVersion) {
+        throw new Error("verification plugin does not match the immutable Pact evidence policy");
+      }
+      const key = this.plugins.key(input.pluginId, input.pluginVersion);
+      const manifest = state.plugins[key];
+      if (!manifest || manifest.status !== "active") throw new Error("Pact verification plugin is not active");
+      if (manifest.codeDigest !== pact.evidencePolicyCodeDigest) throw new Error("Pact verification plugin digest changed");
+      const implementation = this.plugins.get(input.pluginId, input.pluginVersion);
+      if (!implementation || implementation.manifest.codeDigest !== pact.evidencePolicyCodeDigest) throw new Error("Pact verification implementation digest mismatch");
       const decision = await this.plugins.evaluate({ state, checkpoint, pluginId: input.pluginId, pluginVersion: input.pluginVersion, now: this.now });
       state.verificationDecisions[decision.decisionId] = decision;
       pactEvent(state, pact, `CHECKPOINT_${decision.decision.toUpperCase()}`, `plugin:${input.pluginId}`, { checkpointId: checkpoint.checkpointId, decisionId: decision.decisionId, reasonCodes: decision.reasonCodes }, decision.evaluatedAt);
@@ -868,10 +972,15 @@ export class OpenRailsAgentKernel {
       gaia.resolutionSummary = input.resolutionSummary;
       gaia.updatedAt = nowIso(this.now);
       let obligation: RectificationObligationV1 | undefined;
-      if (["replacement_pact", "compensating_pact"].includes(input.decision)) {
+      if (["replacement_pact", "compensating_pact", "close_and_return_residual"].includes(input.decision)) {
         gaia.status = "rectification_required";
         pact.status = "rectification_required";
-        const remedyType: RectificationObligationV1["remedyType"] = input.decision === "replacement_pact" ? "replacement_pact" : "compensating_pact";
+        const remedyType: RectificationObligationV1["remedyType"] =
+          input.decision === "replacement_pact"
+            ? "replacement_pact"
+            : input.decision === "compensating_pact"
+              ? "compensating_pact"
+              : "manual_action";
         const nextObligation: RectificationObligationV1 = {
           version: "openrails-rectification-obligation-v1",
           obligationId: stableId("rectify", { caseId: gaia.caseId, decision: input.decision }),
@@ -881,7 +990,9 @@ export class OpenRailsAgentKernel {
           obligor: gaia.respondent,
           beneficiary: gaia.claimant,
           remedyType,
-          terms: clone(input.rectificationTerms ?? {}),
+          terms: clone(input.decision === "close_and_return_residual"
+            ? { action: "close_and_return_residual", paycardId: pact.openRails?.paycardId, ...(input.rectificationTerms ?? {}) }
+            : (input.rectificationTerms ?? {})),
           status: "open",
           createdAt: gaia.updatedAt,
         };
@@ -889,7 +1000,6 @@ export class OpenRailsAgentKernel {
         state.rectifications[nextObligation.obligationId] = nextObligation;
       } else {
         gaia.status = input.decision === "dismiss" ? "dismissed" : "resolved";
-        pact.status = input.decision === "close_and_return_residual" ? "closed" : pact.status;
       }
       pact.revision += 1;
       pact.updatedAt = gaia.updatedAt;
@@ -908,10 +1018,12 @@ export class OpenRailsAgentKernel {
   }> {
     const state = await this.state();
     const pact = requirePact(state, pactId);
-    const path = requirePath(state, pact.pathId);
-    if (path.hash !== pact.pathHash || path.artifact.revision !== pact.pathRevision) throw new Error("Pact is bound to a stale Path revision");
-    assertPact(pact);
-    const evidencePolicyHash = hashCanonical({ evidencePolicyId: pact.evidencePolicyId });
+    assertPactExecutionEligible(state, pact, this.now().getTime());
+    const evidencePolicyHash = hashCanonical({
+      evidencePolicyId: pact.evidencePolicyId,
+      evidencePolicyVersion: pact.evidencePolicyVersion,
+      evidencePolicyCodeDigest: pact.evidencePolicyCodeDigest,
+    });
     return {
       workflowId: pact.pactId,
       metadataRef: `orpk1:${pact.pathRevision}:${pact.pathHash.slice(2)}:${pact.decisionHash.slice(2)}:${evidencePolicyHash.slice(2)}`,
@@ -935,11 +1047,13 @@ export class OpenRailsAgentKernel {
       settledAmountBaseUnits: input.settledAmountBaseUnits,
       final: input.final,
     });
+    assertSettlementObservationMatchesPact(before, input.txHash, input.settledAmountBaseUnits, observation);
     if (observation.final !== input.final) throw new Error("Settlement finality claim does not match canonical Paycard state");
     return this.options.store.transact((state) => {
       const pact = requirePact(state, input.pactId);
       assertPact(pact);
       if (!pact.openRails?.openingObservation) throw new Error("Canonical opening observation disappeared before settlement recording");
+      assertSettlementObservationMatchesPact(pact, input.txHash, input.settledAmountBaseUnits, observation);
       const settlements = pact.openRails.settlements ?? [];
       if (!settlements.some((entry) => entry.transactionHash.toLowerCase() === observation.transactionHash.toLowerCase())) settlements.push(observation);
       pact.openRails.settlements = settlements;

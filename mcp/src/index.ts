@@ -101,7 +101,7 @@ registerTool('openrails_prepare_workspace', {
     displayName: z.string(),
     principalId: z.string(),
     authorityAccount: address,
-    authorityType: z.enum(['eoa', 'multisig', 'smart-account']),
+    authorityType: z.literal('eoa').describe('Agent Kernel V1 currently supports EOA Workspace authorities only.'),
   },
 }, async (args: Record<string, unknown>) => run(() => agent.prepareWorkspace(args)));
 
