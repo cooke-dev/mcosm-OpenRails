@@ -1,181 +1,332 @@
-/**
- * OpenRails MCP tool handlers — pure functions of (ctx, args) → result, kept separate from
- * transport so they're unit-testable. The Vault is the source of truth; reads are on-chain
- * projections. Signing/relay is non-custodial: the server signs with its own configured
- * account and never holds anyone else's keys.
- */
 import { ethers } from 'ethers';
 import {
-  createRailsCardIntent,
-  createRailsCardClaimLink,
-  createRailsFlowRequestLink,
-  parseOpenRailsLink,
-  payGasless,
-  claimGasless,
-  signUsdcPermit,
-  readPaycard,
-  readNonce,
-  readTokenBalance,
-  hashOpenRailsMetadata,
   buildMetadataBoundPaycardId,
+  hashOpenRailsMetadata,
+  readNonce,
+  readPaycard,
+  readTokenBalance,
   type CanonicalMetadataV1,
   type OpenRailsIntentV1,
-  type RailsCardLinkPayloadV1,
-  type RailsFlowLinkPayloadV1,
 } from 'openrails-sdk';
 import type { OpenRailsContext } from './context.js';
 
-const NONCE_CHANNEL = 0;
+const EIP712_TYPES = {
+  SettlementIntent: [
+    { name: 'paycardId', type: 'bytes32' },
+    { name: 'metadataHash', type: 'bytes32' },
+    { name: 'recipient', type: 'address' },
+    { name: 'totalAllocationPool', type: 'uint256' },
+    { name: 'flowVelocityPerSecond', type: 'uint256' },
+    { name: 'genesisTimestamp', type: 'uint256' },
+    { name: 'lifespanSeconds', type: 'uint256' },
+    { name: 'residualDeltaRecipient', type: 'address' },
+    { name: 'nonceChannel', type: 'uint256' },
+    { name: 'nonceValue', type: 'uint256' },
+  ],
+} as const;
 
-// The SDK is compiled CommonJS; its .d.ts reference ethers' commonjs type-view, while this ESM
-// package resolves ethers to its ESM view. Same runtime ethers, incompatible brand types — so we
-// pass the provider through this boundary cast at SDK read calls.
 const asProvider = (ctx: OpenRailsContext): any => ctx.provider;
 
-function metadataFor(params: {
-  mode: CanonicalMetadataV1['mode'];
-  originator: string;
-  recipient: string;
-  token: string;
-  amount: string;
-  velocity: string;
-  lifespan: number;
-}): CanonicalMetadataV1 {
+function positiveIntegerString(value: string, field: string): bigint {
+  if (!/^[0-9]+$/.test(value)) {
+    throw new Error(`${field} must be an unsigned base-unit integer`);
+  }
+  const parsed = BigInt(value);
+  if (parsed <= 0n) {
+    throw new Error(`${field} must be greater than zero`);
+  }
+  return parsed;
+}
+
+function nonNegativeSafeInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${field} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function bytes32(value: string, field: string): string {
+  if (!ethers.isHexString(value, 32)) {
+    throw new Error(`${field} must be a bytes32 hex string`);
+  }
+  return value;
+}
+
+function explorerAddress(ctx: OpenRailsContext, address: string): string {
+  return `${ctx.config.explorerBaseUrl}/address/${address}`;
+}
+
+function explorerTransaction(ctx: OpenRailsContext, hash: string): string {
+  return `${ctx.config.explorerBaseUrl}/tx/${hash}`;
+}
+
+export async function networkInfo(ctx: OpenRailsContext) {
   return {
+    network: {
+      ...ctx.config,
+      nativeCurrency: {
+        name: 'Ether',
+        symbol: 'ETH',
+        decimals: 18,
+      },
+    },
+    deployment: {
+      token: explorerAddress(ctx, ctx.config.tokenAddress),
+      vault: explorerAddress(ctx, ctx.config.vaultAddress),
+      factory: explorerAddress(ctx, ctx.config.factoryAddress),
+      master: explorerAddress(ctx, ctx.config.masterAddress),
+    },
+    safety: {
+      settlementTokenIsTestOnly: true,
+      settlementTokenIsUsdc: false,
+      acceptsPrivateKeys: false,
+      signsIntents: false,
+      submitsTransactions: false,
+      holdsFunds: false,
+      canonicalReadsUseStandardRpc: true,
+      flashblocksRpcIsUxOnly: true,
+    },
+  };
+}
+
+export async function getBalance(
+  ctx: OpenRailsContext,
+  args: { address: string },
+) {
+  const address = ethers.getAddress(args.address);
+  const balance = await readTokenBalance(
+    asProvider(ctx),
+    ctx.config.tokenAddress,
+    address,
+  );
+
+  return {
+    address,
+    token: ctx.config.tokenAddress,
+    symbol: ctx.config.tokenSymbol,
+    decimals: ctx.config.tokenDecimals,
+    balanceBaseUnits: balance.toString(),
+    balanceFormatted: ethers.formatUnits(
+      balance,
+      ctx.config.tokenDecimals,
+    ),
+  };
+}
+
+export async function getNonce(
+  ctx: OpenRailsContext,
+  args: { payerAddress: string; nonceChannel?: number },
+) {
+  const payerAddress = ethers.getAddress(args.payerAddress);
+  const nonceChannel = nonNegativeSafeInteger(
+    args.nonceChannel ?? 0,
+    'nonceChannel',
+  );
+  const nonceValue = await readNonce(
+    asProvider(ctx),
+    ctx.config.vaultAddress,
+    payerAddress,
+    nonceChannel,
+  );
+
+  return {
+    payerAddress,
+    nonceChannel,
+    nonceValue,
+    vaultAddress: ctx.config.vaultAddress,
+  };
+}
+
+export async function getPaycard(
+  ctx: OpenRailsContext,
+  args: { paycardId: string },
+) {
+  const paycardId = bytes32(args.paycardId, 'paycardId');
+  const card = await readPaycard(
+    asProvider(ctx),
+    ctx.config.vaultAddress,
+    paycardId,
+  );
+
+  return {
+    paycardId,
+    ...card,
+    totalAllocationFormatted: ethers.formatUnits(
+      card.totalAllocationPool,
+      ctx.config.tokenDecimals,
+    ),
+    availableBalanceFormatted: ethers.formatUnits(
+      card.availableBalance,
+      ctx.config.tokenDecimals,
+    ),
+    explorer: {
+      payer: explorerAddress(ctx, card.payer),
+      recipient: explorerAddress(ctx, card.recipient),
+    },
+  };
+}
+
+export interface PrepareRailsFlowArgs {
+  payerAddress: string;
+  recipientAddress: string;
+  totalAllocationBaseUnits: string;
+  flowVelocityBaseUnitsPerSecond: string;
+  lifespanSeconds: number;
+  nonceChannel?: number;
+  residualDeltaRecipient?: string;
+  workflowId?: string;
+  metadataRef?: string;
+  salt?: string;
+}
+
+export async function prepareRailsFlow(
+  ctx: OpenRailsContext,
+  args: PrepareRailsFlowArgs,
+) {
+  const payerAddress = ethers.getAddress(args.payerAddress);
+  const recipientAddress = ethers.getAddress(args.recipientAddress);
+  const residualDeltaRecipient = ethers.getAddress(
+    args.residualDeltaRecipient ?? payerAddress,
+  );
+
+  const totalAllocation = positiveIntegerString(
+    args.totalAllocationBaseUnits,
+    'totalAllocationBaseUnits',
+  );
+  const flowVelocity = positiveIntegerString(
+    args.flowVelocityBaseUnitsPerSecond,
+    'flowVelocityBaseUnitsPerSecond',
+  );
+
+  const lifespanSeconds = nonNegativeSafeInteger(
+    args.lifespanSeconds,
+    'lifespanSeconds',
+  );
+  if (lifespanSeconds === 0) {
+    throw new Error(
+      'lifespanSeconds must be greater than zero for a RailsFlow stream',
+    );
+  }
+
+  const nonceChannel = nonNegativeSafeInteger(
+    args.nonceChannel ?? 0,
+    'nonceChannel',
+  );
+
+  const [nonceValue, latestBlock] = await Promise.all([
+    readNonce(
+      asProvider(ctx),
+      ctx.config.vaultAddress,
+      payerAddress,
+      nonceChannel,
+    ),
+    ctx.provider.getBlock('latest'),
+  ]);
+
+  if (!latestBlock) {
+    throw new Error('Unable to read the latest GIWA block');
+  }
+
+  const genesisTimestamp = latestBlock.timestamp;
+  const expiresAt = genesisTimestamp + lifespanSeconds;
+  if (!Number.isSafeInteger(expiresAt)) {
+    throw new Error('genesisTimestamp + lifespanSeconds exceeds safe integer range');
+  }
+
+  const metadata: CanonicalMetadataV1 = {
     version: 'openrails-metadata-v1',
-    mode: params.mode,
-    originator: params.originator,
-    recipient: params.recipient,
-    token: params.token,
-    amount: params.amount,
-    flowVelocityPerSecond: params.velocity,
-    lifespanSeconds: params.lifespan,
-    metadataRef: 'openrails-mcp',
+    mode: 'railsflow',
+    originator: payerAddress,
+    recipient: recipientAddress,
+    token: ctx.config.tokenAddress,
+    amount: totalAllocation.toString(),
+    flowVelocityPerSecond: flowVelocity.toString(),
+    lifespanSeconds,
+    workflowId: args.workflowId,
+    metadataRef: args.metadataRef ?? 'openrails-giwa-mcp',
+    expiresAt,
   };
-}
 
-// ---- openrails_config -------------------------------------------------------
-export async function openrailsConfig(ctx: OpenRailsContext) {
-  let usdcBalance: string | null = null;
-  if (ctx.signerAddress) {
-    const bal = await readTokenBalance(asProvider(ctx), ctx.config.usdcAddress, ctx.signerAddress);
-    usdcBalance = ethers.formatUnits(bal, 6);
-  }
-  return {
-    ...ctx.config,
-    signerAddress: ctx.signerAddress ?? null,
-    usdcBalance,
-    note: 'Vault is the source of truth; balances/state are on-chain projections. Opens/claims are gasless via the relay.',
-  };
-}
-
-// ---- pay_link ---------------------------------------------------------------
-export async function payLink(ctx: OpenRailsContext, args: { link: string }) {
-  const artifact = parseOpenRailsLink(args.link);
-
-  if (artifact.kind === 'railscard') {
-    const pl = artifact.payload as RailsCardLinkPayloadV1;
-    const account = await ctx.requireAccount();
-    const claimRecipient = await account.getAddress();
-    const res = await claimGasless({ relay: ctx.relay, envelopeToken: pl.envelopeToken, claimRecipient });
-    return { kind: 'railscard', action: 'claimed', ...res, explorer: `${ctx.config.explorerBaseUrl}/tx/${res.txHash}` };
-  }
-
-  // RailsFlow request → pay it (the signer becomes the payer).
-  const pl = artifact.payload as RailsFlowLinkPayloadV1;
-  if (pl.expiresAt && Date.now() / 1000 > pl.expiresAt) throw new Error('This request link has expired.');
-  const account = await ctx.requireAccount();
-  const client = await ctx.requireClient();
-  const payer = await account.getAddress();
-  const { hubAddress: hub, usdcAddress: token, chainId } = ctx.config;
-
-  const metadata = metadataFor({
-    mode: 'railsflow', originator: payer, recipient: pl.recipient, token,
-    amount: pl.amount, velocity: pl.flowVelocityPerSecond, lifespan: pl.lifespanSeconds,
-  });
   const metadataHash = hashOpenRailsMetadata(metadata);
-  const nonceValue = Number(await readNonce(asProvider(ctx), hub, payer, NONCE_CHANNEL));
-  const paycardId = buildMetadataBoundPaycardId({ payer, nonceChannel: NONCE_CHANNEL, nonceValue, metadataHash });
+  const paycardId = buildMetadataBoundPaycardId({
+    payer: payerAddress,
+    nonceChannel,
+    nonceValue,
+    metadataHash,
+    salt: args.salt,
+  });
+
   const intent: OpenRailsIntentV1 = {
-    paycardId, metadataHash, recipient: pl.recipient,
-    totalAllocationPool: pl.amount, flowVelocityPerSecond: pl.flowVelocityPerSecond,
-    genesisTimestamp: Math.floor(Date.now() / 1000), lifespanSeconds: pl.lifespanSeconds,
-    residualDeltaRecipient: payer, nonceChannel: NONCE_CHANNEL, nonceValue,
+    paycardId,
+    metadataHash,
+    recipient: recipientAddress,
+    totalAllocationPool: totalAllocation.toString(),
+    flowVelocityPerSecond: flowVelocity.toString(),
+    genesisTimestamp,
+    lifespanSeconds,
+    residualDeltaRecipient,
+    nonceChannel,
+    nonceValue,
   };
-  const permit = await signUsdcPermit(account, { token, spender: hub, value: pl.amount, chainId, provider: asProvider(ctx) });
-  const res = await payGasless({ client, relay: ctx.relay, intent, options: { mode: 'railsflow', metadata }, permit });
-  return { kind: 'railsflow', action: 'paid', ...res, explorer: `${ctx.config.explorerBaseUrl}/tx/${res.txHash}` };
-}
 
-// ---- create_request_link ----------------------------------------------------
-export async function createRequestLink(
-  ctx: OpenRailsContext,
-  args: { amount: string; recipient?: string; oneTime?: boolean; velocityPerSecond?: string; lifespanSeconds?: number },
-) {
-  const recipient = ethers.getAddress(args.recipient ?? (ctx.signerAddress ?? ethers.ZeroAddress));
-  if (recipient === ethers.ZeroAddress) throw new Error('recipient required (no signer configured to default to)');
-  const oneTime = args.oneTime ?? false;
-  const velocity = oneTime ? '0' : (args.velocityPerSecond ?? '0');
-  const lifespan = oneTime ? 0 : (args.lifespanSeconds ?? 0);
-  const { hubAddress: hub, usdcAddress: token, chainId, appBaseUrl } = ctx.config;
+  const projectedStreamedAmount =
+    flowVelocity * BigInt(lifespanSeconds);
+  const fundingSufficient =
+    totalAllocation >= projectedStreamedAmount;
+  const projectedResidual =
+    fundingSufficient
+      ? totalAllocation - projectedStreamedAmount
+      : 0n;
 
-  const metadata = metadataFor({ mode: 'railsflow', originator: recipient, recipient, token, amount: args.amount, velocity, lifespan });
-  const link = createRailsFlowRequestLink({
-    appBaseUrl, chainId, vault: hub, token, metadataHash: hashOpenRailsMetadata(metadata),
-    payload: { mode: 'railsflow', merchant: recipient, recipient, amount: args.amount, flowVelocityPerSecond: velocity, lifespanSeconds: lifespan, metadataRef: 'openrails-mcp' },
-  });
-  return { link, recipient, amount: args.amount, type: oneTime ? 'one-time' : 'streaming' };
-}
-
-// ---- issue_railscard --------------------------------------------------------
-export async function issueRailscard(
-  ctx: OpenRailsContext,
-  args: { amount: string; mode?: 'bearer' | 'recipient_bound'; recipient?: string; oneTime?: boolean; velocityPerSecond?: string; lifespanSeconds?: number },
-) {
-  const account = await ctx.requireAccount();
-  const client = await ctx.requireClient();
-  const payer = await account.getAddress();
-  const bearer = (args.mode ?? 'bearer') === 'bearer';
-  const recipient = bearer ? ethers.ZeroAddress : ethers.getAddress(args.recipient ?? ethers.ZeroAddress);
-  if (!bearer && recipient === ethers.ZeroAddress) throw new Error('recipient_bound cards need a recipient');
-  const oneTime = args.oneTime ?? true;
-  const velocity = oneTime ? '0' : (args.velocityPerSecond ?? '0');
-  const lifespan = oneTime ? 0 : (args.lifespanSeconds ?? 0);
-  const { hubAddress: hub, usdcAddress: token, chainId, appBaseUrl } = ctx.config;
-  const mode = bearer ? 'railscard_bearer' : 'railscard_recipient_bound';
-
-  const metadata = metadataFor({ mode, originator: payer, recipient, token, amount: args.amount, velocity, lifespan });
-  const metadataHash = hashOpenRailsMetadata(metadata);
-  const nonceValue = Number(await readNonce(asProvider(ctx), hub, payer, NONCE_CHANNEL));
-  const paycardId = buildMetadataBoundPaycardId({ payer, nonceChannel: NONCE_CHANNEL, nonceValue, metadataHash });
-  const intent = createRailsCardIntent({
-    paycardId, metadataHash,
-    totalAllocationPool: args.amount, flowVelocityPerSecond: velocity,
-    genesisTimestamp: Math.floor(Date.now() / 1000), lifespanSeconds: lifespan,
-    residualDeltaRecipient: payer, nonceChannel: NONCE_CHANNEL, nonceValue,
-  });
-  if (!bearer) intent.recipient = recipient;
-
-  const envelopeToken = await client.signPermissionEnvelope(intent, { mode, metadata });
-  const link = createRailsCardClaimLink({ appBaseUrl, chainId, vault: hub, token, metadataHash, mode, envelopeToken });
   return {
-    link, paycardId, mode, amount: args.amount, type: oneTime ? 'one-time' : 'streaming',
-    note: 'Escrow is pulled from the payer on claim — ensure the payer keeps enough USDC allowance/balance when this is claimed.',
+    mode: 'railsflow',
+    network: {
+      chainId: ctx.config.chainId,
+      name: ctx.config.chainName,
+      rpcUrl: ctx.config.rpcUrl,
+    },
+    metadata,
+    metadataHash,
+    paycardId,
+    intent,
+    typedData: {
+      domain: {
+        name: 'OpenRails Network',
+        version: '2.0.0',
+        chainId: ctx.config.chainId,
+        verifyingContract: ctx.config.vaultAddress,
+      },
+      types: EIP712_TYPES,
+      primaryType: 'SettlementIntent',
+      message: intent,
+    },
+    approval: {
+      token: ctx.config.tokenAddress,
+      spender: ctx.config.vaultAddress,
+      amountBaseUnits: totalAllocation.toString(),
+    },
+    economics: {
+      projectedStreamedAmountBaseUnits:
+        projectedStreamedAmount.toString(),
+      projectedResidualBaseUnits:
+        projectedResidual.toString(),
+      fundingSufficient,
+      warning: fundingSufficient
+        ? null
+        : 'Total allocation is lower than velocity multiplied by lifespan.',
+    },
+    safety: {
+      unsigned: true,
+      signerRequiredExternally: true,
+      transactionSubmitted: false,
+      privateKeyAccepted: false,
+    },
   };
 }
 
-// ---- paycard_status ---------------------------------------------------------
-export async function paycardStatus(ctx: OpenRailsContext, args: { paycardId: string }) {
-  const c = await readPaycard(asProvider(ctx), ctx.config.hubAddress, args.paycardId);
-  return {
-    paycardId: args.paycardId,
-    payer: c.payer,
-    recipient: c.recipient,
-    status: c.operationalStatus,
-    totalAllocation: ethers.formatUnits(c.totalAllocationPool, 6),
-    availableBalance: ethers.formatUnits(c.availableBalance, 6),
-    flowVelocityPerSecond: c.flowVelocityPerSecond.toString(),
-    lifespanSeconds: Number(c.lifespanSeconds),
-    type: Number(c.lifespanSeconds) === 0 ? 'one-time' : 'streaming',
-  };
+export function transactionExplorerUrl(
+  ctx: OpenRailsContext,
+  transactionHash: string,
+): string {
+  return explorerTransaction(ctx, transactionHash);
 }

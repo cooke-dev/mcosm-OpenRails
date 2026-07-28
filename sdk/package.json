@@ -1,7 +1,7 @@
 {
   "name": "openrails-sdk",
   "version": "0.1.2",
-  "description": "OpenRails SDK + `openrails` CLI — intent-driven clearing & settlement for streamed USDC work on Arc (RailsFlow, RailsCard, Paycard Streams, nonce lanes, receipts).",
+  "description": "OpenRails SDK and CLI for bounded, intent-driven settlement on EVM networks, including the canonical GIWA Sepolia deployment.",
   "license": "MIT",
   "homepage": "https://openrails.pages.dev",
   "type": "commonjs",
@@ -56,7 +56,10 @@
     "streaming-payments",
     "nanopayments",
     "eip-712",
-    "agent-payments"
+    "agent-payments",
+    "giwa",
+    "mcp",
+    "programmable-payments"
   ],
   "dependencies": {
     "ethers": "^6.13.0"

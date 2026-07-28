@@ -1,7 +1,7 @@
 {
   "name": "openrails-mcp",
-  "version": "0.1.1",
-  "description": "OpenRails MCP server — let agents transact on the Arc USDC rail (pay a link, issue a RailsCard, read paycard state) over stdio, gasless by default.",
+  "version": "0.2.0",
+  "description": "GIWA-safe OpenRails MCP server for canonical reads and unsigned bounded RailsFlow preparation over stdio.",
   "license": "MIT",
   "homepage": "https://openrails.pages.dev",
   "type": "module",
@@ -17,21 +17,23 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "smoke": "npm run build && node smoke.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
     "openrails",
     "mcp",
     "model-context-protocol",
-    "arc",
-    "usdc",
-    "agent-payments"
+    "giwa",
+    "programmable-payments",
+    "agent-payments",
+    "eip-712"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "ethers": "^6.13.0",
     "openrails-sdk": "^0.1.1",
-    "zod": "^3.23.0"
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "typescript": "^5.4.5",

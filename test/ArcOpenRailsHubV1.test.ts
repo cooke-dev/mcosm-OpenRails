@@ -812,9 +812,20 @@ describe("ArcOpenRailsHubV1", () => {
 
   it("should reject malformed signatures and expired windows", async () => {
     const { client } = await createFundedClient();
+
+    const latestBlock = await ethers.provider.getBlock("latest");
+    if (!latestBlock) {
+      throw new Error("Unable to read latest Hardhat block");
+    }
+
+    // Use chain time so earlier time-travel tests cannot expire this
+    // intent before malformed-signature validation is reached.
     const malformed = buildIntent({
       paycardId: ethers.keccak256(ethers.toUtf8Bytes("malformed-signature")),
+      genesisTimestamp: latestBlock.timestamp - 1,
+      lifespanSeconds: 3600,
     });
+
     const expired = buildIntent({
       paycardId: ethers.keccak256(ethers.toUtf8Bytes("expired-window")),
       genesisTimestamp: Math.floor(Date.now() / 1000) - 1000,

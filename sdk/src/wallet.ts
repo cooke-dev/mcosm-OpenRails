@@ -35,7 +35,35 @@ export const OPENRAILS_ERC20_ABI = [
 export interface OpenRailsConfigLike {
   chainId: number;
   clearinghouseAddress: string;
-  usdcAddress: string;
+
+  /** Canonical chain-neutral settlement-token field. */
+  settlementTokenAddress?: string;
+
+  /**
+   * @deprecated Use settlementTokenAddress.
+   * Retained for existing Arc/USDC integrations.
+   */
+  usdcAddress?: string;
+}
+
+export function resolveOpenRailsSettlementToken(
+  config: OpenRailsConfigLike,
+): string {
+  const candidate =
+    config.settlementTokenAddress ??
+    config.usdcAddress;
+
+  if (
+    !candidate ||
+    !ethers.isAddress(candidate) ||
+    candidate === ethers.ZeroAddress
+  ) {
+    throw new Error(
+      'OpenRails settlement token address is missing or invalid',
+    );
+  }
+
+  return ethers.getAddress(candidate);
 }
 
 export interface Eip1193ProviderLike {

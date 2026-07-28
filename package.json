@@ -34,7 +34,11 @@
     "deploy:giwa": "hardhat run scripts/deploy-giwa-openrails.ts --network giwaSepolia",
     "verify:giwa": "hardhat run scripts/verify-giwa-deployment.ts --network giwaSepolia",
     "check:giwa": "hardhat run scripts/check-giwa-network.ts --network giwaSepolia",
-    "recover:giwa": "hardhat run scripts/recover-giwa-deployment.ts --network giwaSepolia"
+    "recover:giwa": "hardhat run scripts/recover-giwa-deployment.ts --network giwaSepolia",
+    "test:giwa-sdk": "hardhat test test/OpenRailsGiwaSdkMcp.test.ts",
+    "build:mcp": "npm run build --prefix mcp",
+    "smoke:mcp": "npm run smoke --prefix mcp",
+    "mcp:giwa": "node mcp/dist/index.js"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.2.0",

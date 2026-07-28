@@ -1,115 +1,200 @@
 #!/usr/bin/env node
-/**
- * OpenRails MCP server (stdio).
- *
- * Exposes the Arc USDC rail to agents as tools: read config, pay a link (RailsFlow request or
- * RailsCard claim), create a request link, issue a RailsCard, and read paycard state. Opens and
- * claims are gasless by default (routed through the keeper relay); the server signs with its own
- * configured account and is non-custodial.
- *
- * Configure via env (see README): OPENRAILS_MCP_SIGNER_KEY (dev signer), OPENRAILS_RPC_URL,
- * OPENRAILS_HUB_ADDRESS, OPENRAILS_RELAY_URL, OPENRAILS_APP_BASE_URL, …
- */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { buildContext } from './context.js';
 import {
-  openrailsConfig,
-  payLink,
-  createRequestLink,
-  issueRailscard,
-  paycardStatus,
+  getBalance,
+  getNonce,
+  getPaycard,
+  networkInfo,
+  prepareRailsFlow,
+  type PrepareRailsFlowArgs,
 } from './tools.js';
 
 const ctx = buildContext();
-const server = new McpServer({ name: 'openrails-mcp', version: '0.1.0' });
 
-type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+const server = new McpServer(
+  {
+    name: 'openrails-giwa',
+    version: '0.2.0',
+  },
+  {
+    instructions:
+      'Inspect the canonical OpenRails GIWA Sepolia deployment and prepare unsigned bounded RailsFlow intents. This server accepts no private keys, signs nothing, and submits no transactions.',
+  },
+);
 
-/** Wrap a tool handler: JSON-stringify success, surface errors as MCP tool errors. */
+type ToolResult = {
+  content: Array<{
+    type: 'text';
+    text: string;
+  }>;
+  isError?: boolean;
+};
+
 function ok(value: unknown): ToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(value, null, 2),
+      },
+    ],
+  };
 }
-function fail(err: unknown): ToolResult {
-  return { content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+
+function fail(error: unknown): ToolResult {
+  return {
+    content: [
+      {
+        type: 'text',
+        text:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      },
+    ],
+    isError: true,
+  };
 }
-async function run(fn: () => Promise<unknown>): Promise<ToolResult> {
+
+async function run(
+  operation: () => Promise<unknown>,
+): Promise<ToolResult> {
   try {
-    return ok(await fn());
-  } catch (err) {
-    return fail(err);
+    return ok(await operation());
+  } catch (error) {
+    return fail(error);
   }
 }
 
-server.registerTool(
-  'openrails_config',
+const registerTool =
+  server.registerTool.bind(server) as unknown as (
+    name: string,
+    config: {
+      description?: string;
+      inputSchema: Record<string, unknown>;
+    },
+    handler: (...args: any[]) => unknown,
+  ) => unknown;
+
+registerTool(
+  'openrails_network_info',
   {
-    description: 'Show the OpenRails network config, the server signer address, and its USDC balance. No side effects.',
+    description:
+      'Return canonical OpenRails GIWA Sepolia network, deployment, RPC, token, explorer, and safety information.',
     inputSchema: {},
   },
-  async () => run(() => openrailsConfig(ctx)),
+  async () => run(() => networkInfo(ctx)),
 );
 
-server.registerTool(
-  'pay_link',
+registerTool(
+  'openrails_get_balance',
   {
     description:
-      'Pay an OpenRails link. A RailsFlow request → the server pays it (gasless open, signer becomes payer). A RailsCard link → the server claims it to the signer address. Returns the tx hash.',
-    inputSchema: { link: z.string().describe('An OpenRails link URL or raw #or= token (RailsFlow request or RailsCard).') },
-  },
-  async ({ link }) => run(() => payLink(ctx, { link })),
-);
-
-server.registerTool(
-  'create_request_link',
-  {
-    description: 'Create a RailsFlow request link to RECEIVE payment. Share the link; the payer opens and funds it. No signing/tx.',
+      'Read an address orUSD balance from the canonical GIWA Sepolia token contract.',
     inputSchema: {
-      amount: z.string().describe('Amount in USDC base units (6dp), e.g. "3000" = 0.003 USDC.'),
-      recipient: z.string().optional().describe('Address to receive funds (defaults to the server signer).'),
-      oneTime: z.boolean().optional().describe('true = paid in full once; false/omitted = streaming (needs velocity/lifespan).'),
-      velocityPerSecond: z.string().optional().describe('Streaming: USDC base units per second.'),
-      lifespanSeconds: z.number().optional().describe('Streaming: duration in seconds.'),
+      address: z.string().describe('EVM address to inspect.'),
     },
   },
-  async (args) => run(() => createRequestLink(ctx, args)),
+  async (args: { address: string }) =>
+    run(() => getBalance(ctx, args)),
 );
 
-server.registerTool(
-  'issue_railscard',
+registerTool(
+  'openrails_get_nonce',
   {
     description:
-      'Issue a claimable RailsCard link (the server is the payer, pre-signs the intent). Returns a claim link and paycardId. Escrow is pulled from the payer on claim.',
+      'Read the current OpenRails nonce for a payer and nonce channel.',
     inputSchema: {
-      amount: z.string().describe('Amount in USDC base units (6dp).'),
-      mode: z.enum(['bearer', 'recipient_bound']).optional().describe('bearer = anyone with the link claims (default); recipient_bound = fixed recipient.'),
-      recipient: z.string().optional().describe('Required for recipient_bound.'),
-      oneTime: z.boolean().optional().describe('true (default) = full amount once; false = streaming.'),
-      velocityPerSecond: z.string().optional(),
-      lifespanSeconds: z.number().optional(),
+      payerAddress: z.string().describe('Payer EVM address.'),
+      nonceChannel: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe('Nonce channel. Defaults to 0.'),
     },
   },
-  async (args) => run(() => issueRailscard(ctx, args)),
+  async (args: {
+    payerAddress: string;
+    nonceChannel?: number;
+  }) => run(() => getNonce(ctx, args)),
 );
 
-server.registerTool(
-  'paycard_status',
+registerTool(
+  'openrails_get_paycard',
   {
-    description: 'Read a paycard (stream/card) state from chain by paycardId: payer, recipient, balance, status, type.',
-    inputSchema: { paycardId: z.string().describe('bytes32 paycard id.') },
+    description:
+      'Read canonical OpenRails paycard or stream state by bytes32 paycard ID.',
+    inputSchema: {
+      paycardId: z.string().describe('bytes32 OpenRails paycard ID.'),
+    },
   },
-  async ({ paycardId }) => run(() => paycardStatus(ctx, { paycardId })),
+  async (args: { paycardId: string }) =>
+    run(() => getPaycard(ctx, args)),
+);
+
+registerTool(
+  'openrails_prepare_railsflow',
+  {
+    description:
+      'Prepare unsigned bounded RailsFlow metadata, paycard ID, intent, EIP-712 typed data, approval requirement, and projected economics. Never signs or submits.',
+    inputSchema: {
+      payerAddress: z.string().describe('External payer wallet address.'),
+      recipientAddress: z.string().describe('Fixed payment recipient address.'),
+      totalAllocationBaseUnits: z
+        .string()
+        .regex(/^[0-9]+$/)
+        .describe('Total orUSD allocation in 6-decimal base units.'),
+      flowVelocityBaseUnitsPerSecond: z
+        .string()
+        .regex(/^[0-9]+$/)
+        .describe('orUSD base units streamed per second.'),
+      lifespanSeconds: z
+        .number()
+        .int()
+        .positive()
+        .max(31_536_000)
+        .describe('Stream duration in seconds, up to one year.'),
+      nonceChannel: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe('Nonce channel. Defaults to 0.'),
+      residualDeltaRecipient: z
+        .string()
+        .optional()
+        .describe('Unused-funds recipient. Defaults to payer.'),
+      workflowId: z
+        .string()
+        .max(128)
+        .optional(),
+      metadataRef: z
+        .string()
+        .max(256)
+        .optional(),
+      salt: z
+        .string()
+        .max(256)
+        .optional(),
+    },
+  },
+  async (args: PrepareRailsFlowArgs) =>
+    run(() => prepareRailsFlow(ctx, args)),
 );
 
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // stderr is safe for logs (stdout is the MCP channel).
-  console.error(`openrails-mcp ready · ${ctx.config.networkMode} · signer ${ctx.signerAddress ?? '(read-only)'}`);
+  console.error(
+    'openrails-giwa ready · read-and-prepare · no signer · no transaction submission',
+  );
 }
 
-main().catch((err) => {
-  console.error('openrails-mcp failed to start:', err);
+main().catch((error: unknown) => {
+  console.error('openrails-giwa failed to start:', error);
   process.exit(1);
 });
