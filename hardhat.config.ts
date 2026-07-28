@@ -24,15 +24,6 @@ const config: HardhatUserConfig = {
         ? [process.env.DEPLOYER_PRIVATE_KEY]
         : [],
     },
-    giwaSepolia: {
-      url:
-        process.env.GIWA_SEPOLIA_RPC_URL ||
-        "https://sepolia-rpc.giwa.io",
-      chainId: 91342,
-      accounts: process.env.DEPLOYER_PRIVATE_KEY
-        ? [process.env.DEPLOYER_PRIVATE_KEY]
-        : [],
-    },
   },
 };
 

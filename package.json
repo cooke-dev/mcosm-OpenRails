@@ -30,8 +30,7 @@
     "deploy:openrails": "hardhat run scripts/deploy-openrails.ts --network arcTestnet",
     "smoke:testnet": "hardhat run scripts/smoke-openrails-testnet.ts --network arcTestnet",
     "settler:wallet": "ts-node scripts/gen-settler-wallet.ts",
-    "faucet:wallet": "ts-node scripts/gen-faucet-wallet.ts",
-    "check:giwa": "hardhat run scripts/check-giwa-network.ts --network giwaSepolia"
+    "faucet:wallet": "ts-node scripts/gen-faucet-wallet.ts"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.2.0",
