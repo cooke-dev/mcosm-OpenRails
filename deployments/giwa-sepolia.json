@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "openrails-deployment-v1",
+  "network": "giwaSepolia",
+  "chainId": 91342,
+  "deployer": "0xE4A71e75812c584a5c2E026AF5D00F63A6A3B5d0",
+  "deployedAt": "2026-07-28T16:01:27.038Z",
+  "explorerBaseUrl": "https://sepolia-explorer.giwa.io",
+  "settlementToken": {
+    "address": "0x162BCaEb04D4c82403c925d3AC9bEC8FFc1C07De",
+    "name": "OpenRails Test USD",
+    "symbol": "orUSD",
+    "decimals": 6,
+    "classification": "OpenRails GIWA test token",
+    "deployment": {
+      "address": "0x162BCaEb04D4c82403c925d3AC9bEC8FFc1C07De",
+      "txHash": "0x0fd58b4048fcc7cd3baf5351af599d89bad350edd1bceac36606577eb1d0015c",
+      "blockNumber": 31909059
+    }
+  },
+  "contracts": {
+    "masterImplementation": "0x21DFc1918FD8c5264F78bA57D861Bc4c1F681dAb",
+    "factory": "0x5b59b70272A3948eB3F74CFA292f9dB8B64C4d6d",
+    "canonicalVault": "0x623daf607A0C8F841a72012BCE19cfe9E5fbAbf1"
+  },
+  "transactions": {
+    "settlementTokenDeployment": "0x0fd58b4048fcc7cd3baf5351af599d89bad350edd1bceac36606577eb1d0015c",
+    "masterDeployment": "0x249668b6f570c35fbaae12d8caf215ef46b4f2de91436c4a0202390f1cf1ce7c",
+    "factoryDeployment": "0x3a712b3b4226dd8316fe3b6fc922c71d3e83e4d811985eeb2f0f40184beb463b",
+    "canonicalVaultDeployment": "0x62b15e164da91ca575de10cb97aa9e31c18ce8ddb4bd09fd4d12e2e88adf2b18"
+  },
+  "blocks": {
+    "settlementTokenDeployment": 31909059,
+    "masterDeployment": 31909063,
+    "factoryDeployment": 31909066,
+    "canonicalVaultDeployment": 31909070
+  },
+  "explorerLinks": {
+    "settlementToken": "https://sepolia-explorer.giwa.io/address/0x162BCaEb04D4c82403c925d3AC9bEC8FFc1C07De",
+    "masterImplementation": "https://sepolia-explorer.giwa.io/address/0x21DFc1918FD8c5264F78bA57D861Bc4c1F681dAb",
+    "factory": "https://sepolia-explorer.giwa.io/address/0x5b59b70272A3948eB3F74CFA292f9dB8B64C4d6d",
+    "canonicalVault": "https://sepolia-explorer.giwa.io/address/0x623daf607A0C8F841a72012BCE19cfe9E5fbAbf1"
+  },
+  "notes": [
+    "Recovered from confirmed GIWA Sepolia transactions.",
+    "No private keys or private RPC credentials are included.",
+    "OpenRailsTestUSD/orUSD is test-only and is not USDC."
+  ]
+}

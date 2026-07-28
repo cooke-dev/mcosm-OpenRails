@@ -12,6 +12,39 @@ function env(name: string): string | undefined {
   return value || undefined;
 }
 
+
+async function retryRpcRead<T>(
+  label: string,
+  operation: () => Promise<T>,
+  attempts = 20,
+  delayMs = 1_500,
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < attempts) {
+        console.warn(
+          `${label} unavailable; retrying ${attempt}/${attempts}`,
+        );
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, delayMs),
+        );
+      }
+    }
+  }
+
+  console.error(lastError);
+  throw new Error(
+    `${label} remained unavailable after ${attempts} attempts`,
+  );
+}
+
 function explorerLink(
   explorerBaseUrl: string,
   type: "address" | "tx",
@@ -171,8 +204,45 @@ async function main(): Promise<void> {
     throw new Error("Canonical vault deployment failed");
   }
 
-  const canonicalVaultAddress =
-    await factory.deployedVaults(0);
+  const deployedEvent = vaultReceipt.logs
+    .map((log) => {
+      try {
+        return factory.interface.parseLog(log);
+      } catch {
+        return null;
+      }
+    })
+    .find(
+      (event) =>
+        event?.name === "CorporateVaultDeployed",
+    );
+
+  if (!deployedEvent) {
+    throw new Error(
+      "CorporateVaultDeployed event was not found",
+    );
+  }
+
+  const canonicalVaultAddress = ethers.getAddress(
+    deployedEvent.args.vaultAddress,
+  );
+
+  await retryRpcRead(
+    "Canonical vault bytecode",
+    async () => {
+      const code = await ethers.provider.getCode(
+        canonicalVaultAddress,
+      );
+
+      if (code === "0x") {
+        throw new Error(
+          "Canonical vault bytecode is not readable yet",
+        );
+      }
+
+      return code;
+    },
+  );
 
   const canonicalVault = await ethers.getContractAt(
     "OpenRailsHubV2Initializable",
@@ -183,11 +253,17 @@ async function main(): Promise<void> {
     vaultOwner,
     vaultSettlementToken,
     registeredVault,
-  ] = await Promise.all([
-    canonicalVault.owner(),
-    canonicalVault.settlementToken(),
-    factory.isDeployedVault(canonicalVaultAddress),
-  ]);
+  ] = await retryRpcRead(
+    "Canonical vault state",
+    () =>
+      Promise.all([
+        canonicalVault.owner(),
+        canonicalVault.settlementToken(),
+        factory.isDeployedVault(
+          canonicalVaultAddress,
+        ),
+      ]),
+  );
 
   if (
     ethers.getAddress(vaultOwner) !==
