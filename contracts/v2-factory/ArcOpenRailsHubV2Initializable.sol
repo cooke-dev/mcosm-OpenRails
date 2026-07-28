@@ -6,7 +6,7 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 /**
  * @title OpenRails V2 Initializable Clearinghouse Ledger Prototype
  */
-interface IERC20_ArcGas {
+interface ISettlementToken {
     function transfer(address to, uint256 value) external returns (bool);
     function transferFrom(address from, address to, uint256 value) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
@@ -142,7 +142,7 @@ contract ArcOpenRailsHubV2Initializable {
     }
 
     // Storage variables (not immutable in proxy context)
-    IERC20_ArcGas public arcUsdc;
+    ISettlementToken public settlementToken;
     bytes32 public DOMAIN_SEPARATOR;
     bool private _initialized;
 
@@ -166,7 +166,7 @@ contract ArcOpenRailsHubV2Initializable {
         _initialized = true;
 
         if (_tokenAddress == address(0)) revert InvalidIntent();
-        arcUsdc = IERC20_ArcGas(_tokenAddress);
+        settlementToken = ISettlementToken(_tokenAddress);
 
         owner = _owner;
         emit OwnershipTransferred(address(0), _owner);
@@ -184,18 +184,27 @@ contract ArcOpenRailsHubV2Initializable {
         ));
     }
 
+
+    /**
+     * @notice Compatibility getter retained for existing Arc SDK consumers.
+     * @dev New integrations should use settlementToken().
+     */
+    function arcUsdc() external view returns (address) {
+        return address(settlementToken);
+    }
+
     // =========================================================================
     //                  SafeERC20-style Internal Wrappers
     // =========================================================================
 
-    function _safeTransfer(IERC20_ArcGas token, address to, uint256 value) internal {
+    function _safeTransfer(ISettlementToken token, address to, uint256 value) internal {
         (bool success, bytes memory data) = address(token).call(
             abi.encodeWithSelector(token.transfer.selector, to, value)
         );
         require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeERC20: transfer failed");
     }
 
-    function _safeTransferFrom(IERC20_ArcGas token, address from, address to, uint256 value) internal {
+    function _safeTransferFrom(ISettlementToken token, address from, address to, uint256 value) internal {
         (bool success, bytes memory data) = address(token).call(
             abi.encodeWithSelector(token.transferFrom.selector, from, to, value)
         );
@@ -289,7 +298,7 @@ contract ArcOpenRailsHubV2Initializable {
         card.operationalStatus = ChannelStatus.Terminated;
 
         if (residualDelta > 0) {
-            _safeTransfer(arcUsdc, card.residualDeltaRecipient, residualDelta);
+            _safeTransfer(settlementToken, card.residualDeltaRecipient, residualDelta);
             emit ResidualDeltaReclaimed(paycardId, card.residualDeltaRecipient, residualDelta);
         }
     }
@@ -322,7 +331,7 @@ contract ArcOpenRailsHubV2Initializable {
         }
 
         _consumeNonce(payer, params.nonceChannel, params.nonceValue);
-        _safeTransferFrom(arcUsdc, payer, address(this), params.totalAllocationPool);
+        _safeTransferFrom(settlementToken, payer, address(this), params.totalAllocationPool);
 
         PaycardRegistry storage card = registry[params.paycardId];
         card.payer = payer;
@@ -377,7 +386,7 @@ contract ArcOpenRailsHubV2Initializable {
             card.lastCheckpointEpoch = evaluatedEpoch;
             card.operationalStatus = ChannelStatus.Terminated;
 
-            _safeTransfer(arcUsdc, card.recipient, finalPayout);
+            _safeTransfer(settlementToken, card.recipient, finalPayout);
             emit SettlementFlushed(paycardId, card.recipient, finalPayout);
         } else {
             unchecked {
@@ -385,7 +394,7 @@ contract ArcOpenRailsHubV2Initializable {
             }
             card.lastCheckpointEpoch = evaluatedEpoch;
 
-            _safeTransfer(arcUsdc, card.recipient, accruedDebt);
+            _safeTransfer(settlementToken, card.recipient, accruedDebt);
             emit SettlementFlushed(paycardId, card.recipient, accruedDebt);
         }
     }
