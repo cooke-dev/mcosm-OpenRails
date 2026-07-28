@@ -176,6 +176,7 @@ export interface PrepareRailsFlowArgs {
   residualDeltaRecipient?: string;
   workflowId?: string;
   metadataRef?: string;
+  descriptionHash?: string;
   salt?: string;
 }
 
@@ -244,6 +245,9 @@ export async function prepareRailsFlow(
     lifespanSeconds,
     workflowId: args.workflowId,
     metadataRef: args.metadataRef ?? 'openrails-giwa-mcp',
+    descriptionHash: args.descriptionHash
+      ? bytes32(args.descriptionHash, 'descriptionHash')
+      : undefined,
     expiresAt,
   };
 

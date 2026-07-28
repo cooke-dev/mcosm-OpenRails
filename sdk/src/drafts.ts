@@ -30,6 +30,7 @@ export interface BuildRailsFlowDraftParams {
   residualDeltaRecipient?: string;
   workflowId?: string;
   metadataRef?: string;
+  descriptionHash?: string;
   salt?: string;
 }
 
@@ -186,6 +187,7 @@ export function buildRailsFlowDraft(
     lifespanSeconds,
     workflowId: params.workflowId,
     metadataRef: params.metadataRef,
+    descriptionHash: params.descriptionHash,
     expiresAt:
       genesisTimestamp + lifespanSeconds,
   };

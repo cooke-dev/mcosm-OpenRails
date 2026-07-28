@@ -1,22 +1,16 @@
 {
   "name": "openrails-mcp",
-  "version": "0.2.0",
-  "description": "GIWA-safe OpenRails MCP server for canonical reads and unsigned bounded RailsFlow preparation over stdio.",
+  "version": "0.3.0",
+  "description": "GIWA-safe OpenRails MCP server for canonical reads, unsigned RailsFlow preparation, and the non-custodial Agent Kernel.",
   "license": "MIT",
   "homepage": "https://openrails.pages.dev",
   "type": "module",
-  "bin": {
-    "openrails-mcp": "dist/index.js"
-  },
-  "files": [
-    "dist",
-    "README.md"
-  ],
-  "engines": {
-    "node": ">=18"
-  },
+  "bin": { "openrails-mcp": "dist/index.js" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=20" },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build:kernel": "npm run build --prefix ../agent-kernel",
+    "build": "npm run build:kernel && tsc -p tsconfig.json",
     "smoke": "npm run build && node smoke.mjs",
     "prepublishOnly": "npm run build"
   },
@@ -27,6 +21,9 @@
     "giwa",
     "programmable-payments",
     "agent-payments",
+    "path",
+    "pact",
+    "gaia",
     "eip-712"
   ],
   "dependencies": {
