@@ -1,21 +1,9 @@
-# Greater Integration Path
+# Future Enforcement Levels
 
-## V1 — signed runtime
+1. Current V1: EOA-confirmed execution, signed runtime artifacts, canonical receipt verification.
+2. Onchain commitment registry for active Path revisions and Pact terms hashes.
+3. Smart-account session keys enforcing Path limits independently of the runtime.
+4. Reviewed GIWA sponsorship/Paymaster integration.
+5. Stronger Gaia adjudication and externally attestable rectification obligations.
 
-EOA-owned Workspaces, externally signed Paths and Pacts, runtime policy/evidence, and OpenRails payment enforcement.
-
-## V2 — commitment registry
-
-Optional onchain anchors for active Path hashes, Pact commitments, verifier digests, and Gaia resolutions. No custody.
-
-## V3 — smart-account Path enforcement
-
-Scoped session keys, allowed vault/token/functions, period caps, expiry, pause, and revocation.
-
-## V4 — sponsored confirmed execution
-
-A reviewed GIWA Paymaster or OpenRails relay sponsors gas while the exact Path envelope remains enforced.
-
-## V5 — stronger Gaia
-
-Threshold resolvers, bonded providers, reputation consequences, and automated replacement or compensating Pacts.
+The V1 HTTP process remains operator-only. A public multi-Workspace API requires scoped Agent/runtime credentials, per-route authorization, rate limiting, and tenant-filtered reads before exposure.

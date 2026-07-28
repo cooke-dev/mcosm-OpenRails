@@ -1,0 +1,63 @@
+name: GIWA Agent Kernel
+
+on:
+  pull_request:
+    branches:
+      - feat/giwa-sepolia-migration
+  push:
+    branches:
+      - feat/giwa-agent-kernel
+
+permissions:
+  contents: read
+
+concurrency:
+  group: giwa-agent-kernel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install MCP dependencies
+        run: npm ci --prefix mcp
+
+      - name: Validate Agent Kernel
+        run: npm run check:agent-kernel
+
+      - name: Build MCP
+        run: npm run build:mcp
+
+      - name: Smoke MCP safety boundary
+        run: npm run smoke:mcp
+
+      - name: Test GIWA SDK
+        run: npm run test:giwa-sdk
+
+      - name: Run full regression suite
+        run: npm test
+
+      - name: Reject high-severity production dependency findings
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm --prefix mcp audit --omit=dev --audit-level=high
+
+      - name: Check patch formatting
+        run: git diff --check

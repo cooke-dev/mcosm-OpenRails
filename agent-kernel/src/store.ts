@@ -24,7 +24,17 @@ export function emptyKernelState(): KernelStateV1 {
     rectifications: {},
     jobs: {},
     events: [],
+    workspaceCommandNonces: {},
     idempotency: {},
+  };
+}
+
+export function normalizeKernelState(state: KernelStateV1): KernelStateV1 {
+  if (state.version !== "openrails-agent-kernel-state-v1") throw new Error("unsupported kernel state version");
+  return {
+    ...emptyKernelState(),
+    ...state,
+    workspaceCommandNonces: state.workspaceCommandNonces ?? {},
   };
 }
 
@@ -61,7 +71,7 @@ export class MemoryKernelStore extends SerializedStore {
 
   constructor(initial: KernelStateV1 = emptyKernelState()) {
     super();
-    this.state = clone(initial);
+    this.state = normalizeKernelState(clone(initial));
   }
 
   async load(): Promise<KernelStateV1> { return clone(this.state); }
@@ -74,8 +84,7 @@ export class JsonFileKernelStore extends SerializedStore {
   async load(): Promise<KernelStateV1> {
     try {
       const parsed = JSON.parse(await readFile(this.filePath, "utf8")) as KernelStateV1;
-      if (parsed.version !== "openrails-agent-kernel-state-v1") throw new Error("unsupported kernel state version");
-      return parsed;
+      return normalizeKernelState(parsed);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyKernelState();
       throw error;
@@ -106,7 +115,7 @@ export class PostgresKernelStore implements KernelStore {
   async load(): Promise<KernelStateV1> {
     const result = await this.db.query('SELECT state_json FROM openrails_kernel_state WHERE singleton=true');
     const state = result.rows?.[0]?.state_json as KernelStateV1 | undefined;
-    return state ? clone(state) : emptyKernelState();
+    return state ? normalizeKernelState(clone(state)) : emptyKernelState();
   }
 
   async save(state: KernelStateV1): Promise<void> {
@@ -129,7 +138,7 @@ export class PostgresKernelStore implements KernelStore {
         [JSON.stringify(emptyKernelState())],
       );
       const current = await client.query('SELECT state_json FROM openrails_kernel_state WHERE singleton=true FOR UPDATE');
-      const draft = clone((current.rows?.[0]?.state_json as KernelStateV1 | undefined) ?? emptyKernelState());
+      const draft = normalizeKernelState(clone((current.rows?.[0]?.state_json as KernelStateV1 | undefined) ?? emptyKernelState()));
       const result = await operation(draft);
       await client.query('UPDATE openrails_kernel_state SET state_json=$1::jsonb, updated_at=now() WHERE singleton=true', [JSON.stringify(draft)]);
       await client.query('COMMIT');

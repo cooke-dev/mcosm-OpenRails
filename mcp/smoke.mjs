@@ -22,8 +22,10 @@ const expected = [
   'openrails_kernel_info',
   'openrails_prepare_workspace',
   'openrails_register_workspace',
+  'openrails_prepare_workspace_command',
   'openrails_prepare_agent',
   'openrails_register_agent',
+  'openrails_set_agent_status',
   'openrails_prepare_path',
   'openrails_activate_path',
   'openrails_submit_proposal',
@@ -32,6 +34,8 @@ const expected = [
   'openrails_prepare_pact_signature',
   'openrails_sign_pact_record',
   'openrails_prepare_pact_railsflow',
+  'openrails_bind_pact_payment',
+  'openrails_record_pact_settlement',
   'openrails_install_verification_plugin',
   'openrails_submit_checkpoint',
   'openrails_verify_checkpoint',
@@ -52,7 +56,7 @@ if (network.safety.acceptsPrivateKeys !== false || network.safety.submitsTransac
 const kernelInfo = await client.callTool({ name: 'openrails_kernel_info', arguments: {} });
 if (kernelInfo.isError) throw new Error('openrails_kernel_info returned an MCP error');
 const kernel = JSON.parse(kernelInfo.content.filter((entry) => entry.type === 'text').map((entry) => entry.text).join('\n'));
-if (kernel.safety.acceptsPrivateKeys !== false || kernel.safety.broadcasts !== false || kernel.safety.arbitraryCalldata !== false) {
+if (kernel.safety.acceptsPrivateKeys !== false || kernel.safety.broadcasts !== false || kernel.safety.arbitraryCalldata !== false || kernel.safety.canonicalChainEvidenceRequiredForFinancialState !== true) {
   throw new Error('Agent Kernel safety boundary regressed');
 }
 console.log('tools:', names.length);

@@ -112,14 +112,18 @@ export async function evaluateProposal(
       else if (!path.permittedCounterparties.some((entry) => entry.toLowerCase() === proposal.counterparty?.toLowerCase())) reasons.push("COUNTERPARTY_NOT_ALLOWED");
     }
 
-    const requiresDojang = path.identityRequirements.some((entry) => entry.required && entry.provider === "dojang");
-    if (requiresDojang) {
+    const requiredIdentity = path.identityRequirements.filter((entry) => entry.required);
+    if (requiredIdentity.length > 0) {
       if (!proposal.counterparty) reasons.push("COUNTERPARTY_REQUIRED");
       else if (!options.identityResolver) reasons.push("COUNTERPARTY_NOT_VERIFIED");
       else {
         try {
           identity = await options.identityResolver.resolve(proposal.counterparty);
-          if (!identity.verified) reasons.push("COUNTERPARTY_NOT_VERIFIED");
+          for (const requirement of requiredIdentity) {
+            if (requirement.provider === "dojang" && !identity.verified) reasons.push("COUNTERPARTY_NOT_VERIFIED");
+            if ((requirement.nameService === "up.id" || requirement.requireResolvedName) && !identity.resolvedName) reasons.push("COUNTERPARTY_NOT_VERIFIED");
+            if (requirement.requireForwardResolutionMatch && identity.forwardResolutionMatches !== true) reasons.push("COUNTERPARTY_NOT_VERIFIED");
+          }
         } catch {
           reasons.push("COUNTERPARTY_NOT_VERIFIED");
         }
@@ -133,6 +137,7 @@ export async function evaluateProposal(
   const evaluatedAt = nowIso(now);
   const decisionCore = {
     proposalId: proposal.proposalId,
+    proposalHash: hashCanonical(proposal),
     workspaceId: proposal.workspaceId,
     pathId: proposal.pathId,
     pathHash: signedPath?.hash ?? ("0x" + "00".repeat(32)) as `0x${string}`,

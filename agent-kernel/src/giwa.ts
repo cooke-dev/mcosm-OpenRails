@@ -7,6 +7,12 @@ export const GIWA_SEPOLIA = {
   canonicalRpcUrl: "https://sepolia-rpc.giwa.io",
   flashblocksRpcUrl: "https://sepolia-rpc-flashblocks.giwa.io",
   explorerBaseUrl: "https://sepolia-explorer.giwa.io",
+  tokenAddress: "0x162BCaEb04D4c82403c925d3AC9bEC8FFc1C07De",
+  vaultAddress: "0x623daf607A0C8F841a72012BCE19cfe9E5fbAbf1",
+  factoryAddress: "0x5b59b70272A3948eB3F74CFA292f9dB8B64C4d6d",
+  masterAddress: "0x21DFc1918FD8c5264F78bA57D861Bc4c1F681dAb",
+  dojangScrollAddress: "0xd5077b67dcb56caC8b270C7788FC3E6ee03F17B9",
+  upbitKoreaAttesterId: "0xd99b42e778498aa3c9c1f6a012359130252780511687a35982e8e52735453034",
 } as const;
 
 export class GiwaRpcClient {
@@ -70,7 +76,8 @@ export interface GiwaTransactionObservation {
   transactionHash: Hex;
   flashblocksSeen: boolean;
   flashblocksReceipt?: Record<string, unknown>;
-  canonicalConfirmed: boolean;
+  canonicalReceiptObserved: boolean;
+  canonicalSucceeded: boolean;
   canonicalReceipt?: Record<string, unknown>;
   observedAt: string;
 }
@@ -95,7 +102,8 @@ export class GiwaConfirmationObserver {
       transactionHash,
       flashblocksSeen: Boolean(flashReceipt),
       ...(flashReceipt ? { flashblocksReceipt: flashReceipt } : {}),
-      canonicalConfirmed: Boolean(canonicalReceipt?.blockNumber),
+      canonicalReceiptObserved: Boolean(canonicalReceipt?.blockNumber),
+      canonicalSucceeded: canonicalReceipt?.status === "0x1" || canonicalReceipt?.status === 1,
       ...(canonicalReceipt ? { canonicalReceipt } : {}),
       observedAt: new Date().toISOString(),
     };

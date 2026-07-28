@@ -5,7 +5,6 @@ import {
   MemoryKernelStore,
   OpenRailsAgentKernel,
   VerificationPluginRegistry,
-  createHashEqualityPlugin,
   hashCanonical,
   type Address,
   type AgentIdentityV1,
@@ -13,6 +12,7 @@ import {
   type AuthoritySignatureVerifier,
   type ExecutionCheckpointV1,
   type Hex,
+  type OpenRailsChainVerifier,
   type PathV1,
   type VerificationPluginManifestV1,
 } from "../src/index.js";
@@ -25,6 +25,44 @@ const signature = `0x${"11".repeat(65)}` as Hex;
 const verifier: AuthoritySignatureVerifier = { async verify(input) { return input.signature === signature; } };
 const now = () => new Date("2026-07-28T12:00:00.000Z");
 
+const chainVerifier: OpenRailsChainVerifier = {
+  async verifyOpening({ pact, metadataHash, paycardId, openingTxHash }) {
+    if (!pact.openRails) throw new Error("payment not prepared");
+    return {
+      version: "openrails-opening-observation-v1",
+      transactionHash: openingTxHash,
+      chainId: pact.paymentTerms.chainId,
+      vault: pact.paymentTerms.vault,
+      paycardId,
+      metadataHash,
+      payer: pact.paymentTerms.payer,
+      recipient: pact.paymentTerms.recipient,
+      residualRecipient: pact.paymentTerms.residualRecipient,
+      poolAllocationBaseUnits: pact.paymentTerms.maximumAllocationBaseUnits,
+      flowVelocityBaseUnitsPerSecond: pact.paymentTerms.velocityBaseUnitsPerSecond,
+      genesisTimestamp: pact.openRails.genesisTimestamp,
+      lifespanSeconds: pact.paymentTerms.lifespanSeconds,
+      blockNumber: 1,
+      observedAt: now().toISOString(),
+    };
+  },
+  async verifySettlement({ pact, txHash, settledAmountBaseUnits, final }) {
+    if (!pact.openRails) throw new Error("payment not prepared");
+    return {
+      version: "openrails-settlement-observation-v1",
+      transactionHash: txHash,
+      chainId: pact.paymentTerms.chainId,
+      vault: pact.paymentTerms.vault,
+      paycardId: pact.openRails.paycardId,
+      recipient: pact.paymentTerms.recipient,
+      settledAmountBaseUnits,
+      final,
+      blockNumber: 2,
+      observedAt: now().toISOString(),
+    };
+  },
+};
+
 async function setup() {
   const store = new MemoryKernelStore();
   const plugins = new VerificationPluginRegistry();
@@ -33,6 +71,7 @@ async function setup() {
     signatureVerifier: verifier,
     actionRegistry: new ActionRegistry(),
     pluginRegistry: plugins,
+    chainVerifier,
     now,
     identityResolver: {
       async resolve(address) {
@@ -88,8 +127,15 @@ async function setup() {
     installedWorkspaceIds: ["workspace.demo"],
     createdAt: now().toISOString(),
   };
-  plugins.bind(createHashEqualityPlugin(manifest));
-  await kernel.installPlugin(manifest, authority);
+  plugins.bind({
+    manifest,
+    async evaluate(checkpoint) {
+      return { decision: /^0x[0-9a-fA-F]{64}$/.test(checkpoint.evidenceHash) ? "approved" : "rejected", reasonCodes: ["TEST_VERIFIER"] };
+    },
+  });
+  const pluginPayload = { workspaceId: "workspace.demo", pluginId: manifest.pluginId, pluginVersion: manifest.pluginVersion, codeDigest: manifest.codeDigest };
+  const pluginCommand = await kernel.prepareWorkspaceCommand({ workspaceId: "workspace.demo", operation: "install_plugin", payload: pluginPayload });
+  await kernel.installPlugin({ manifest, command: pluginCommand.command, signature });
 
   const path: PathV1 = {
     version: "openrails-path-v1",
@@ -101,7 +147,7 @@ async function setup() {
     permittedActions: ["prepare_railsflow", "create_pact_proposal", "submit_checkpoint", "open_gaia_request"],
     permittedAssets: [token],
     permittedCounterparties: [provider],
-    identityRequirements: [{ provider: "dojang", requirement: "verified-address", required: true, nameService: "up.id" }],
+    identityRequirements: [{ provider: "dojang", requirement: "verified-address", required: true, nameService: "up.id", requireResolvedName: true, requireForwardResolutionMatch: true }],
     approvedVerificationPlugins: [{ pluginId: "proof.hash", version: "1.0.0" }],
     limits: {
       maxPerPactBaseUnits: "10000000",
@@ -154,8 +200,6 @@ test("full allowed lifecycle creates a Pact, verifies proof, and binds OpenRails
   const pact = await kernel.createPactFromProposal({
     proposalId: submitted.proposal.proposalId,
     pactId: "pact.demo",
-    counterparty: provider,
-    initiator: authority,
     commercialTerms: { currency: "orUSD" },
     completionPolicyId: "completion.default",
     disputePolicyId: "gaia.default",
@@ -166,6 +210,15 @@ test("full allowed lifecycle creates a Pact, verifies proof, and binds OpenRails
   await kernel.signPact({ pactId: pact.pactId, signer: provider, signature });
   assert.equal((await kernel.getPact(pact.pactId))?.status, "accepted");
 
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash: hashCanonical("metadata"),
+    paycardId: hashCanonical("paycard"),
+    actor: authority,
+    genesisTimestamp: 1_722_165_000,
+    nonceChannel: 0,
+    nonceValue: 1,
+  });
   await kernel.bindOpenRailsPayment({
     pactId: pact.pactId,
     metadataHash: hashCanonical("metadata"),
@@ -182,6 +235,7 @@ test("full allowed lifecycle creates a Pact, verifies proof, and binds OpenRails
     pactId: pact.pactId,
     pathId: "path.demo",
     paycardId: hashCanonical("paycard"),
+    termsHash: pact.termsHash,
     actor: provider,
     counterparty: provider,
     checkpointIndex: 1,
@@ -189,7 +243,9 @@ test("full allowed lifecycle creates a Pact, verifies proof, and binds OpenRails
     evidenceType: "hash",
     evidenceHash: hashCanonical("work-result"),
     observedAt: now().toISOString(),
+    validUntil: "2026-07-28T12:05:00.000Z",
     submittedBy: provider,
+    signature,
   };
   await kernel.submitCheckpoint(checkpoint);
   const decision = await kernel.verifyCheckpoint({ checkpointId: checkpoint.checkpointId, pluginId: "proof.hash", pluginVersion: "1.0.0" });
@@ -228,7 +284,9 @@ test("Path revision requires predecessor hash and monotonic version", async () =
 
 test("revoked Agent cannot pass Baphomet", async () => {
   const { kernel } = await setup();
-  await kernel.setAgentStatus({ workspaceId: "workspace.demo", agentId: "agent.demo", status: "revoked", authoritySigner: authority });
+  const payload = { workspaceId: "workspace.demo", agentId: "agent.demo", status: "revoked" as const };
+  const command = await kernel.prepareWorkspaceCommand({ workspaceId: "workspace.demo", operation: "set_agent_status", payload });
+  await kernel.setAgentStatus({ ...payload, command: command.command, signature });
   await kernel.submitProposal(proposal({ proposalId: "proposal.revoked", idempotencyKey: "revoked-1" }));
   const job = await kernel.runNextJob();
   assert.equal(job?.state, "blocked");
@@ -243,8 +301,6 @@ test("Gaia creates a rectification obligation rather than reversing settlement",
   await kernel.createPactFromProposal({
     proposalId: "proposal.demo",
     pactId: "pact.gaia",
-    counterparty: provider,
-    initiator: authority,
     commercialTerms: {},
     completionPolicyId: "completion.default",
     disputePolicyId: "gaia.default",
@@ -263,15 +319,19 @@ test("Gaia creates a rectification obligation rather than reversing settlement",
     paymentSnapshot: { observedAt: now().toISOString(), availableBalanceBaseUnits: "4000000" },
     requestedRemedy: "replacement",
     resolutionPolicyId: "gaia.default",
+    claimValidUntil: "2026-07-28T12:05:00.000Z",
+    claimSignature: signature,
   });
   assert.equal(gaia.status, "open");
-  const resolved = await kernel.resolveGaiaCase({
+  const resolutionPayload = {
     caseId: gaia.caseId,
     resolver: authority,
-    decision: "replacement_pact",
+    decision: "replacement_pact" as const,
     resolutionSummary: "Create replacement Pact after residual closure.",
     rectificationTerms: { preserveAccruedSettlement: true },
-  });
+  };
+  const resolutionCommand = await kernel.prepareWorkspaceCommand({ workspaceId: "workspace.demo", operation: "resolve_gaia", payload: resolutionPayload });
+  const resolved = await kernel.resolveGaiaCase({ ...resolutionPayload, command: resolutionCommand.command, signature });
   assert.equal(resolved.gaiaCase.status, "rectification_required");
   assert.equal(resolved.obligation?.remedyType, "replacement_pact");
 });
@@ -310,8 +370,6 @@ test("Pact payment preparation fails after its signed Path revision becomes stal
   await kernel.createPactFromProposal({
     proposalId: "proposal.demo",
     pactId: "pact.stale",
-    counterparty: provider,
-    initiator: authority,
     commercialTerms: {},
     completionPolicyId: "completion.default",
     disputePolicyId: "gaia.default",
@@ -329,4 +387,236 @@ test("Pact payment preparation fails after its signed Path revision becomes stal
     signature,
   });
   await assert.rejects(kernel.openRailsMetadataBinding("pact.stale"), /stale Path revision/);
+});
+
+
+test("Pact parties and payment recipients are derived from the approved proposal and Workspace", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.derived",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+  });
+  assert.equal(pact.counterparty, provider);
+  assert.equal(pact.initiator, authority);
+  assert.equal(pact.paymentTerms.payer, authority);
+  assert.equal(pact.paymentTerms.recipient, provider);
+  assert.equal(pact.paymentTerms.residualRecipient, authority);
+  assert.equal(pact.proposalHash, hashCanonical(proposal()));
+});
+
+test("Pact creation re-evaluates policy and rejects a proposal after the Path is tightened", async () => {
+  const { kernel, path } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const current = await kernel.getPath(path.pathId);
+  await kernel.activatePath({
+    path: {
+      ...path,
+      revision: 2,
+      previousPathHash: current!.hash,
+      permittedCounterparties: ["0x4444444444444444444444444444444444444444" as Address],
+      updatedAt: "2026-07-28T12:04:00.000Z",
+    },
+    signature,
+  });
+  await assert.rejects(
+    kernel.createPactFromProposal({
+      proposalId: "proposal.demo",
+      pactId: "pact.rejected-after-revision",
+      commercialTerms: {},
+      completionPolicyId: "completion.default",
+      disputePolicyId: "gaia.default",
+    }),
+    /not currently allowed by Baphomet/,
+  );
+});
+
+test("Pact signatures and OpenRails metadata bind immutable terms rather than lifecycle state", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.terms",
+    commercialTerms: { unit: "service" },
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  const before = kernel.preparePactSignature(pact);
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  const accepted = await kernel.getPact(pact.pactId);
+  assert.ok(accepted);
+  const after = kernel.preparePactSignature(accepted!);
+  assert.equal(before.hash, after.hash);
+  assert.deepEqual(before.typedData.message, after.typedData.message);
+  const binding = await kernel.openRailsMetadataBinding(pact.pactId);
+  assert.equal(binding.descriptionHash, pact.termsHash);
+  assert.equal(binding.salt, pact.termsHash);
+});
+
+test("Pact activation requires prepared parameters and a canonical chain verifier", async () => {
+  const store = new MemoryKernelStore();
+  const noChainKernel = new OpenRailsAgentKernel({ store, signatureVerifier: verifier, now });
+  const preparedWorkspace = noChainKernel.prepareWorkspace({
+    workspaceId: "workspace.nochain", workspaceType: "individual", displayName: "No chain", principalId: "principal.nochain", authorityAccount: authority, authorityType: "eoa",
+  });
+  await noChainKernel.registerWorkspace({ workspace: preparedWorkspace.workspace, signature });
+  await assert.rejects(
+    noChainKernel.bindOpenRailsPayment({
+      pactId: "missing", metadataHash: hashCanonical("metadata"), paycardId: hashCanonical("paycard"), actor: authority, openingTxHash: hashCanonical("tx"),
+    }),
+    /Canonical OpenRails chain verifier is required/,
+  );
+});
+
+test("checkpoint must bind the immutable Pact terms and canonical Paycard", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo", pactId: "pact.checkpoint-bind", commercialTerms: {}, completionPolicyId: "completion.default", disputePolicyId: "gaia.default", requiresCounterpartySignature: false,
+  });
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId, metadataHash: hashCanonical("metadata-bind"), paycardId: hashCanonical("paycard-bind"), actor: authority, genesisTimestamp: 1_722_165_000, nonceChannel: 0, nonceValue: 2,
+  });
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId, metadataHash: hashCanonical("metadata-bind"), paycardId: hashCanonical("paycard-bind"), actor: authority, openingTxHash: hashCanonical("open-bind"),
+  });
+  const bad: ExecutionCheckpointV1 = {
+    version: "openrails-work-checkpoint-v1", checkpointId: "checkpoint.bad-bind", workspaceId: pact.workspaceId, pactId: pact.pactId, pathId: pact.pathId, paycardId: hashCanonical("wrong-paycard"), termsHash: hashCanonical("wrong-terms"), actor: provider, counterparty: provider, checkpointIndex: 1, checkpointType: "progress", evidenceType: "hash", evidenceHash: hashCanonical("evidence"), observedAt: now().toISOString(), validUntil: "2026-07-28T12:05:00.000Z", submittedBy: provider, signature,
+  };
+  await assert.rejects(kernel.submitCheckpoint(bad), /terms hash mismatch/);
+});
+
+
+test("Workspace administrative commands are signed, nonce-protected, and payload-bound", async () => {
+  const { kernel } = await setup();
+  const payload = { workspaceId: "workspace.demo", agentId: "agent.demo", status: "paused" as const };
+  const prepared = await kernel.prepareWorkspaceCommand({ workspaceId: "workspace.demo", operation: "set_agent_status", payload });
+  await kernel.setAgentStatus({ ...payload, command: prepared.command, signature });
+  await assert.rejects(
+    kernel.setAgentStatus({ ...payload, status: "revoked", command: prepared.command, signature }),
+    /payload hash mismatch|nonce mismatch/,
+  );
+});
+
+
+test("canonical settlement recording requires verified opening and stores canonical evidence", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.settlement",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  const metadataHash = hashCanonical("metadata-settlement");
+  const paycardId = hashCanonical("paycard-settlement");
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash,
+    paycardId,
+    actor: authority,
+    genesisTimestamp: 1_722_165_000,
+    nonceChannel: 0,
+    nonceValue: 3,
+  });
+  await kernel.bindOpenRailsPayment({
+    pactId: pact.pactId,
+    metadataHash,
+    paycardId,
+    actor: authority,
+    openingTxHash: hashCanonical("opening-settlement"),
+  });
+  const settled = await kernel.recordPactSettlement({
+    pactId: pact.pactId,
+    actor: "canonical-observer",
+    txHash: hashCanonical("settlement-tx"),
+    settledAmountBaseUnits: "5000000",
+    final: true,
+  });
+  assert.equal(settled.status, "settled");
+  assert.equal(settled.openRails?.settlements?.length, 1);
+  assert.equal(settled.openRails?.settlements?.[0]?.paycardId, paycardId);
+  assert.equal(settled.openRails?.settlements?.[0]?.settledAmountBaseUnits, "5000000");
+
+  const noChainKernel = new OpenRailsAgentKernel({ store: new MemoryKernelStore(), signatureVerifier: verifier, now });
+  await assert.rejects(
+    noChainKernel.recordPactSettlement({
+      pactId: "missing",
+      actor: "forged-observer",
+      txHash: hashCanonical("forged-settlement"),
+      settledAmountBaseUnits: "1",
+      final: true,
+    }),
+    /Canonical OpenRails chain verifier is required/,
+  );
+});
+
+test("Gaia claims reject invalid signatures and non-party bindings", async () => {
+  const { kernel } = await setup();
+  await kernel.submitProposal(proposal());
+  await kernel.runNextJob();
+  const pact = await kernel.createPactFromProposal({
+    proposalId: "proposal.demo",
+    pactId: "pact.gaia-adversarial",
+    commercialTerms: {},
+    completionPolicyId: "completion.default",
+    disputePolicyId: "gaia.default",
+    requiresCounterpartySignature: false,
+  });
+  await kernel.signPact({ pactId: pact.pactId, signer: authority, signature });
+  const baseClaim = {
+    workspaceId: pact.workspaceId,
+    pactId: pact.pactId,
+    pathId: pact.pathId,
+    claimant: authority,
+    respondent: provider,
+    reasonCode: "EVIDENCE_CONFLICT",
+    evidenceCommitments: [hashCanonical("gaia-adversarial-evidence")],
+    paymentSnapshot: { observedAt: now().toISOString() },
+    requestedRemedy: "manual review",
+    resolutionPolicyId: "gaia.default",
+    claimValidUntil: "2026-07-28T12:05:00.000Z",
+  };
+
+  await assert.rejects(
+    kernel.openGaiaCase({
+      ...baseClaim,
+      caseId: "gaia.invalid-signature",
+      claimSignature: `0x${"22".repeat(65)}` as Hex,
+    }),
+    /claim signature is invalid/,
+  );
+
+  await assert.rejects(
+    kernel.openGaiaCase({
+      ...baseClaim,
+      caseId: "gaia.non-party",
+      claimant: "0x4444444444444444444444444444444444444444" as Address,
+      claimSignature: signature,
+    }),
+    /claimant is not a Pact party/,
+  );
+
+  await assert.rejects(
+    kernel.openGaiaCase({
+      ...baseClaim,
+      caseId: "gaia.wrong-respondent",
+      respondent: authority,
+      claimSignature: signature,
+    }),
+    /respondent is not the opposing Pact party/,
+  );
 });

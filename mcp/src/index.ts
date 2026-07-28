@@ -78,7 +78,7 @@ registerTool('openrails_prepare_railsflow', {
     residualDeltaRecipient: z.string().optional(),
     workflowId: z.string().max(128).optional(),
     metadataRef: z.string().max(256).optional(),
-    descriptionHash: z.string().optional(),
+    descriptionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
     salt: z.string().max(256).optional(),
   },
 }, async (args: PrepareRailsFlowArgs) => run(() => prepareRailsFlow(ctx, args)));
@@ -110,6 +110,16 @@ registerTool('openrails_register_workspace', {
   inputSchema: { workspaceJson: json('Prepared Workspace JSON.'), signature },
 }, async (args: { workspaceJson: string; signature: `0x${string}` }) => run(() => agent.registerWorkspace(args)));
 
+registerTool('openrails_prepare_workspace_command', {
+  description: 'Prepare a nonce-protected, expiring Workspace administrative command for external wallet signature.',
+  inputSchema: {
+    workspaceId: z.string(),
+    operation: z.enum(['set_agent_status', 'install_plugin', 'resolve_gaia', 'pause_path', 'revoke_path']),
+    payloadJson: json('Exact command payload JSON.'),
+    ttlSeconds: z.number().int().min(30).max(900).optional(),
+  },
+}, async (args: any) => run(() => agent.prepareWorkspaceCommand(args)));
+
 registerTool('openrails_prepare_agent', {
   description: 'Prepare an unsigned Workspace-scoped Agent registration artifact.',
   inputSchema: { agentJson: json('Agent registration input JSON without generated version/status/revision fields.') },
@@ -119,6 +129,17 @@ registerTool('openrails_register_agent', {
   description: 'Verify Workspace-authority approval and register an Agent identity without granting custody.',
   inputSchema: { agentJson: json('Prepared AgentIdentityV1 JSON.'), authoritySigner: address, signature },
 }, async (args: { agentJson: string; authoritySigner: `0x${string}`; signature: `0x${string}` }) => run(() => agent.registerAgent(args)));
+
+registerTool('openrails_set_agent_status', {
+  description: 'Apply a signed, nonce-protected Workspace command to pause, activate, or revoke an Agent.',
+  inputSchema: {
+    workspaceId: z.string(),
+    agentId: z.string(),
+    status: z.enum(['pending', 'active', 'paused', 'revoked']),
+    commandJson: json('Prepared WorkspaceCommandV1 JSON.'),
+    signature,
+  },
+}, async (args: any) => run(() => agent.setAgentStatus(args)));
 
 registerTool('openrails_prepare_path', {
   description: 'Canonicalize, hash, and prepare EIP-712 typed data for a versioned Path.',
@@ -150,8 +171,6 @@ registerTool('openrails_create_pact', {
   inputSchema: {
     proposalId: z.string(),
     pactId: z.string(),
-    counterparty: address,
-    initiator: address,
     commercialTermsJson: json('Commercial terms JSON.'),
     completionPolicyId: z.string(),
     disputePolicyId: z.string(),
@@ -175,17 +194,28 @@ registerTool('openrails_prepare_pact_railsflow', {
 }, async (args: { pactId: string; nonceChannel?: number }) => run(() => agent.preparePactRailsFlow(args)));
 
 registerTool('openrails_bind_pact_payment', {
-  description: 'Record the metadata hash, Paycard ID, and optional externally submitted opening transaction on a Pact.',
-  inputSchema: { pactId: z.string(), metadataHash: bytes32, paycardId: bytes32, actor: address, openingTxHash: bytes32.optional() },
+  description: 'Verify a canonically confirmed GIWA opening transaction against the prepared Pact payment and activate the Pact.',
+  inputSchema: { pactId: z.string(), metadataHash: bytes32, paycardId: bytes32, actor: address, openingTxHash: bytes32 },
 }, async (args: any) => run(() => agent.bindPactPayment(args)));
+
+registerTool('openrails_record_pact_settlement', {
+  description: 'Verify a canonical GIWA SettlementFlushed event and record the observed settlement on its Pact.',
+  inputSchema: {
+    pactId: z.string(),
+    actor: z.string(),
+    txHash: bytes32,
+    settledAmountBaseUnits: z.string().regex(/^[0-9]+$/),
+    final: z.boolean(),
+  },
+}, async (args: { pactId: string; actor: string; txHash: `0x${string}`; settledAmountBaseUnits: string; final: boolean }) => run(() => agent.recordPactSettlement(args)));
 
 registerTool('openrails_install_verification_plugin', {
   description: 'Install a versioned verification manifest in a Workspace. Plugins receive no custody or signing authority.',
-  inputSchema: { manifestJson: json('VerificationPluginManifestV1 JSON.'), authoritySigner: address },
-}, async (args: { manifestJson: string; authoritySigner: `0x${string}` }) => run(() => agent.installPlugin(args)));
+  inputSchema: { manifestJson: json('VerificationPluginManifestV1 JSON.'), commandJson: json('Prepared install_plugin WorkspaceCommandV1 JSON.'), signature },
+}, async (args: { manifestJson: string; commandJson: string; signature: `0x${string}` }) => run(() => agent.installPlugin(args)));
 
 registerTool('openrails_submit_checkpoint', {
-  description: 'Submit a signed or attributable Proof checkpoint for an active Pact.',
+  description: 'Submit an unverified checkpoint claim bound to a Pact terms hash for later signature and evidence verification.',
   inputSchema: { checkpointJson: json('ExecutionCheckpointV1 JSON.') },
 }, async (args: { checkpointJson: string }) => run(() => agent.submitCheckpoint(args)));
 
@@ -207,6 +237,8 @@ registerTool('openrails_resolve_gaia_case', {
     decision: z.enum(['dismiss', 'close_and_return_residual', 'replacement_pact', 'compensating_pact', 'manual_review']),
     resolutionSummary: z.string(),
     rectificationTermsJson: json('Optional rectification terms JSON.').optional(),
+    commandJson: json('Prepared resolve_gaia WorkspaceCommandV1 JSON.'),
+    signature,
   },
 }, async (args: any) => run(() => agent.resolveGaiaCase(args)));
 

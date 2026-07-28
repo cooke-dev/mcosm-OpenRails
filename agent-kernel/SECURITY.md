@@ -1,9 +1,12 @@
 # Security Boundary
 
-- External wallets sign Workspace, Agent, Path, and Pact typed data.
+- External wallets sign Workspace, Agent, Path, Pact terms, Workspace commands, Gaia claims, and checkpoints.
 - Agents receive identity/runtime credentials only; no owner private keys.
 - The default authority modes are observe, propose, prepare, and confirmed execution.
 - The runtime never accepts arbitrary calldata or arbitrary settlement targets.
-- Verification plugins return decisions and never receive custody authority.
+- Proposal parties cannot be substituted during Pact creation.
+- Mutable Pact lifecycle state is separated cryptographically from immutable signed terms through `termsHash`.
+- Verification plugins return decisions and never receive custody authority. The bundled development hash-syntax plugin returns `review`, never automatic completion.
 - Gaia closes future economic exposure and creates rectification obligations; it does not reverse finalized transfers.
 - The GIWA OpenRails vault is authoritative for balances, nonces, settlement, and residual recovery.
+- The standalone HTTP server is an operator-only localhost surface. Mutations and global state debugging are disabled by default.

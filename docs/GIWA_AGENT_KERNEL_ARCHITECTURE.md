@@ -1,37 +1,13 @@
-# OpenRails GIWA Agent Kernel V1
+# GIWA Agent Kernel Architecture
 
-## Scope
+The backend is a modular monolith: Workspace and Agent registry, Path policy, immutable Pact terms plus mutable Pact state, Baphomet evaluation, Proof plugins, canonical OpenRails observations, and Gaia.
 
-The Agent Kernel is the backend integration layer above the deployed OpenRails GIWA rail. It does not replace the vault, hold funds, sign payment intents, or broadcast transactions.
+## Binding chain
 
-## Modules
+`Path hash -> Proposal hash -> Baphomet decision hash -> Pact terms hash -> OpenRails metadata hash -> Paycard ID`
 
-- **Workspace** — principal, authority account, membership, roles, revision.
-- **Agent Registry** — identity key, runtime credential hash, capabilities, Path assignments, revocation.
-- **Path** — signed and versioned delegated economic mandate.
-- **Pact** — signed agreement bound to one Path revision and one OpenRails payment lifecycle.
-- **Baphomet** — deterministic ALLOW/BLOCK/REVIEW policy evaluation.
-- **Hotshot boundary** — unsigned preparation and externally confirmed execution coordination.
-- **Proof** — versioned plugins, checkpoints, decisions, evidence/source commitments.
-- **Gaia** — runtime exception handling and rectification obligations.
-- **GIWA adapters** — canonical RPC, Flashblocks observation, Dojang verification, optional `.up.id` resolution.
+Pact terms contain the parties, approved Proposal and decision commitments, commercial/payment terms, and evidence/dispute policies. Lifecycle fields such as status, timestamps, payment observations, and checkpoints do not change the signed `termsHash`.
 
-## Authority modes
+## Financial truth
 
-1. `observe`
-2. `propose`
-3. `prepare`
-4. `confirmed_execution`
-
-No unattended autonomous spending is enabled in V1.
-
-## Hash binding
-
-A Pact records the exact signed Path hash and revision. Pact-bound RailsFlow preparation uses:
-
-- `workflowId = pactId`
-- `descriptionHash = canonical Pact hash`
-- `metadataRef = compact Path revision + Path hash + evidence-policy hash commitment`
-- `salt = Pact hash`
-
-The OpenRails vault remains authoritative for payer, recipient, token, allocation, velocity, lifespan, nonces, settlements, and residual recovery.
+Adapters may prepare unsigned RailsFlows. Only the kernel can mark a Pact active or settled, and only after an injected chain verifier proves the canonical GIWA receipt, canonical vault target, exact event fields, and current Paycard registry state.

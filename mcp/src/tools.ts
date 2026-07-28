@@ -176,7 +176,7 @@ export interface PrepareRailsFlowArgs {
   residualDeltaRecipient?: string;
   workflowId?: string;
   metadataRef?: string;
-  descriptionHash?: string;
+  descriptionHash?: `0x${string}`;
   salt?: string;
 }
 

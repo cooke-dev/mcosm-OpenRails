@@ -1,5 +1,14 @@
 # OpenRails GIWA Agent Kernel
 
-Backend-only V1 kernel for Workspace ownership, registered agents, signed and versioned Paths, signed Pacts, typed actions, Baphomet ALLOW/BLOCK/REVIEW decisions, Proof plugins, durable jobs, and runtime Gaia rectification.
+Backend-only V1 kernel for Workspace ownership, registered agents, signed and versioned Paths, proposal-bound immutable Pact terms, typed actions, Baphomet decisions, signed Proof checkpoints, canonical GIWA payment observations, and runtime Gaia rectification.
 
-The kernel never accepts private keys, signs payment intents, approves tokens, or broadcasts transactions. OpenRails remains the only payment and custody boundary.
+The kernel never accepts private keys, signs payment intents, approves tokens, or broadcasts transactions. A Pact can become financially active or settled only through an injected canonical OpenRails chain verifier. The deployed OpenRails vault remains the sole custody and payment-enforcement boundary.
+
+## Security-critical invariants
+
+- Pact payer, recipient, and residual recipient are derived from the approved Proposal and Workspace; adapters cannot replace them.
+- Pact signatures and OpenRails metadata bind `termsHash`, which excludes mutable lifecycle fields.
+- Proposal policy is re-evaluated immediately before Pact creation.
+- Agent status, plugin installation, and Gaia resolution require signed, expiring, nonce-protected Workspace commands.
+- Checkpoints require a participant signature, monotonic index, immutable Pact terms hash, and canonical Paycard binding.
+- Financial state requires canonical GIWA receipts and exact OpenRails event/state matching.

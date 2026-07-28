@@ -1,7 +1,6 @@
-import { ethers } from 'ethers';
 import type { OpenRailsContext } from './context.js';
 import { prepareRailsFlow } from './tools.js';
-import { bindBuiltinPlugin, buildAgentKernel } from './agent-kernel.js';
+import { buildAgentKernel, createBuiltinPlugin } from './agent-kernel.js';
 import type {
   AgentIdentityV1,
   AgentProposalV1,
@@ -10,37 +9,9 @@ import type {
   PactV1,
   PathV1,
   VerificationPluginManifestV1,
+  WorkspaceCommandV1,
   WorkspaceV1,
 } from '../../agent-kernel/dist/index.js';
-
-
-const paycardEvents = new ethers.Interface([
-  'event PaycardProvisioned(bytes32 indexed paycardId,address indexed payer,address indexed recipient,bytes32 metadataHash,uint256 poolAllocation,uint256 flowVelocityPerSecond,uint256 genesisTimestamp,uint256 lifespanSeconds)',
-]);
-
-async function verifyOpeningTransaction(ctx: OpenRailsContext, pact: PactV1, input: { metadataHash: `0x${string}`; paycardId: `0x${string}`; openingTxHash: `0x${string}` }): Promise<void> {
-  const receipt = await ctx.provider.getTransactionReceipt(input.openingTxHash);
-  if (!receipt) throw new Error('opening transaction is not canonically confirmed on GIWA');
-  if (receipt.status !== 1) throw new Error('opening transaction reverted');
-  if (!receipt.to || ethers.getAddress(receipt.to) !== ethers.getAddress(ctx.config.vaultAddress)) throw new Error('opening transaction target is not the canonical OpenRails vault');
-  let matched = false;
-  for (const log of receipt.logs) {
-    if (ethers.getAddress(log.address) !== ethers.getAddress(ctx.config.vaultAddress)) continue;
-    try {
-      const parsed = paycardEvents.parseLog(log);
-      if (!parsed || parsed.name !== 'PaycardProvisioned') continue;
-      matched =
-        parsed.args.paycardId === input.paycardId &&
-        parsed.args.metadataHash === input.metadataHash &&
-        ethers.getAddress(parsed.args.payer) === ethers.getAddress(pact.paymentTerms.payer) &&
-        ethers.getAddress(parsed.args.recipient) === ethers.getAddress(pact.paymentTerms.recipient);
-      if (matched) break;
-    } catch {
-      // Ignore unrelated logs.
-    }
-  }
-  if (!matched) throw new Error('opening transaction does not contain the Pact-bound PaycardProvisioned event');
-}
 
 function parseJson<T>(value: string, field: string): T {
   try { return JSON.parse(value) as T; }
@@ -64,6 +35,7 @@ export function buildAgentTools(ctx: OpenRailsContext) {
           arbitraryCalldata: false,
           autonomousSpendingAdvertised: false,
           frontendIncluded: false,
+          canonicalChainEvidenceRequiredForFinancialState: true,
         },
         counts: {
           workspaces: Object.keys(state.workspaces).length,
@@ -78,9 +50,13 @@ export function buildAgentTools(ctx: OpenRailsContext) {
     prepareWorkspace: (args: Record<string, unknown>) => kernel.prepareWorkspace(args as any),
     registerWorkspace: (args: { workspaceJson: string; signature: `0x${string}` }) =>
       kernel.registerWorkspace({ workspace: parseJson<WorkspaceV1>(args.workspaceJson, 'workspaceJson'), signature: args.signature }),
+    prepareWorkspaceCommand: (args: { workspaceId: string; operation: WorkspaceCommandV1['operation']; payloadJson: string; ttlSeconds?: number }) =>
+      kernel.prepareWorkspaceCommand({ workspaceId: args.workspaceId, operation: args.operation, payload: parseJson<unknown>(args.payloadJson, 'payloadJson'), ...(args.ttlSeconds !== undefined ? { ttlSeconds: args.ttlSeconds } : {}) }),
     prepareAgent: (args: { agentJson: string }) => kernel.prepareAgentRegistration(parseJson<any>(args.agentJson, 'agentJson')),
     registerAgent: (args: { agentJson: string; authoritySigner: `0x${string}`; signature: `0x${string}` }) =>
       kernel.registerAgent({ agent: parseJson<AgentIdentityV1>(args.agentJson, 'agentJson'), authoritySigner: args.authoritySigner, signature: args.signature }),
+    setAgentStatus: (args: { workspaceId: string; agentId: string; status: AgentIdentityV1['status']; commandJson: string; signature: `0x${string}` }) =>
+      kernel.setAgentStatus({ workspaceId: args.workspaceId, agentId: args.agentId, status: args.status, command: parseJson<WorkspaceCommandV1>(args.commandJson, 'commandJson'), signature: args.signature }),
     preparePath: (args: { pathJson: string }) => kernel.preparePath(parseJson<PathV1>(args.pathJson, 'pathJson')),
     activatePath: (args: { pathJson: string; signature: `0x${string}` }) =>
       kernel.activatePath({ path: parseJson<PathV1>(args.pathJson, 'pathJson'), signature: args.signature }),
@@ -90,8 +66,6 @@ export function buildAgentTools(ctx: OpenRailsContext) {
     createPact: (args: {
       proposalId: string;
       pactId: string;
-      counterparty: `0x${string}`;
-      initiator: `0x${string}`;
       commercialTermsJson: string;
       completionPolicyId: string;
       disputePolicyId: string;
@@ -99,8 +73,6 @@ export function buildAgentTools(ctx: OpenRailsContext) {
     }) => kernel.createPactFromProposal({
       proposalId: args.proposalId,
       pactId: args.pactId,
-      counterparty: args.counterparty,
-      initiator: args.initiator,
       commercialTerms: parseJson<Record<string, unknown>>(args.commercialTermsJson, 'commercialTermsJson'),
       completionPolicyId: args.completionPolicyId,
       disputePolicyId: args.disputePolicyId,
@@ -113,40 +85,53 @@ export function buildAgentTools(ctx: OpenRailsContext) {
       if (!pact) throw new Error('Pact not found');
       if (pact.status !== 'accepted') throw new Error('Pact must be accepted before payment preparation');
       const binding = await kernel.openRailsMetadataBinding(pact.pactId);
-      return prepareRailsFlow(ctx, {
+      const draft = await prepareRailsFlow(ctx, {
         payerAddress: pact.paymentTerms.payer,
         recipientAddress: pact.paymentTerms.recipient,
         totalAllocationBaseUnits: pact.paymentTerms.maximumAllocationBaseUnits,
         flowVelocityBaseUnitsPerSecond: pact.paymentTerms.velocityBaseUnitsPerSecond,
         lifespanSeconds: pact.paymentTerms.lifespanSeconds,
-        nonceChannel: args.nonceChannel,
+        ...(args.nonceChannel !== undefined ? { nonceChannel: args.nonceChannel } : {}),
         residualDeltaRecipient: pact.paymentTerms.residualRecipient,
         workflowId: binding.workflowId,
         metadataRef: binding.metadataRef,
         descriptionHash: binding.descriptionHash,
         salt: binding.salt,
       });
+      await kernel.bindOpenRailsPayment({
+        pactId: pact.pactId,
+        metadataHash: draft.metadataHash as `0x${string}`,
+        paycardId: draft.paycardId as `0x${string}`,
+        actor: pact.paymentTerms.payer,
+        genesisTimestamp: draft.intent.genesisTimestamp,
+        nonceChannel: draft.intent.nonceChannel,
+        nonceValue: draft.intent.nonceValue,
+      });
+      return draft;
     },
-    bindPactPayment: async (args: { pactId: string; metadataHash: `0x${string}`; paycardId: `0x${string}`; actor: `0x${string}`; openingTxHash?: `0x${string}` }) => {
-      const pact = await kernel.getPact(args.pactId);
-      if (!pact) throw new Error('Pact not found');
-      if (args.openingTxHash) await verifyOpeningTransaction(ctx, pact, { metadataHash: args.metadataHash, paycardId: args.paycardId, openingTxHash: args.openingTxHash });
-      return kernel.bindOpenRailsPayment(args);
-    },
-    installPlugin: async (args: { manifestJson: string; authoritySigner: `0x${string}` }) => {
+    bindPactPayment: (args: { pactId: string; metadataHash: `0x${string}`; paycardId: `0x${string}`; actor: `0x${string}`; openingTxHash: `0x${string}` }) =>
+      kernel.bindOpenRailsPayment(args),
+    recordPactSettlement: (args: { pactId: string; actor: string; txHash: `0x${string}`; settledAmountBaseUnits: string; final: boolean }) =>
+      kernel.recordPactSettlement(args),
+    installPlugin: async (args: { manifestJson: string; commandJson: string; signature: `0x${string}` }) => {
       const manifest = parseJson<VerificationPluginManifestV1>(args.manifestJson, 'manifestJson');
-      bindBuiltinPlugin(plugins, manifest);
-      return kernel.installPlugin(manifest, args.authoritySigner);
+      const implementation = createBuiltinPlugin(manifest);
+      if (!implementation) throw new Error('This MCP only binds explicitly trusted built-in verification implementations');
+      const installed = await kernel.installPlugin({ manifest, command: parseJson<WorkspaceCommandV1>(args.commandJson, 'commandJson'), signature: args.signature });
+      plugins.bind(implementation);
+      return installed;
     },
     submitCheckpoint: (args: { checkpointJson: string }) => kernel.submitCheckpoint(parseJson<ExecutionCheckpointV1>(args.checkpointJson, 'checkpointJson')),
     verifyCheckpoint: (args: { checkpointId: string; pluginId: string; pluginVersion: string }) => kernel.verifyCheckpoint(args),
     openGaiaCase: (args: { gaiaCaseJson: string }) => kernel.openGaiaCase(parseJson<any>(args.gaiaCaseJson, 'gaiaCaseJson')),
-    resolveGaiaCase: (args: { caseId: string; resolver: `0x${string}`; decision: NonNullable<GaiaCaseV1['decision']>; resolutionSummary: string; rectificationTermsJson?: string }) => kernel.resolveGaiaCase({
+    resolveGaiaCase: (args: { caseId: string; resolver: `0x${string}`; decision: NonNullable<GaiaCaseV1['decision']>; resolutionSummary: string; rectificationTermsJson?: string; commandJson: string; signature: `0x${string}` }) => kernel.resolveGaiaCase({
       caseId: args.caseId,
       resolver: args.resolver,
       decision: args.decision,
       resolutionSummary: args.resolutionSummary,
       ...(args.rectificationTermsJson ? { rectificationTerms: parseJson<Record<string, unknown>>(args.rectificationTermsJson, 'rectificationTermsJson') } : {}),
+      command: parseJson<WorkspaceCommandV1>(args.commandJson, 'commandJson'),
+      signature: args.signature,
     }),
     getWorkspace: (args: { workspaceId: string }) => kernel.getWorkspace(args.workspaceId),
     getAgent: (args: { agentId: string }) => kernel.getAgent(args.agentId),

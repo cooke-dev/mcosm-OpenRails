@@ -61,6 +61,25 @@ export interface WorkspaceV1 {
   updatedAt: IsoDate;
 }
 
+export type WorkspaceCommandOperation =
+  | "set_agent_status"
+  | "install_plugin"
+  | "resolve_gaia"
+  | "pause_path"
+  | "revoke_path";
+
+export interface WorkspaceCommandV1 {
+  version: "openrails-workspace-command-v1";
+  commandId: string;
+  workspaceId: string;
+  operation: WorkspaceCommandOperation;
+  payloadHash: Hex;
+  workspaceRevision: number;
+  nonce: number;
+  issuedAt: IsoDate;
+  expiresAt: IsoDate;
+}
+
 export interface AgentIdentityV1 {
   version: "openrails-agent-identity-v1";
   agentId: string;
@@ -84,6 +103,8 @@ export interface IdentityRequirementV1 {
   requirement: string;
   required: boolean;
   nameService?: "up.id" | string;
+  requireResolvedName?: boolean;
+  requireForwardResolutionMatch?: boolean;
 }
 
 export interface PathLimitsV1 {
@@ -159,6 +180,11 @@ export interface PactV1 {
   pathId: string;
   pathRevision: number;
   pathHash: Hex;
+  proposalId: string;
+  proposalHash: Hex;
+  decisionId: string;
+  decisionHash: Hex;
+  termsHash: Hex;
   initiator: Address;
   agentId: string;
   counterparty: Address;
@@ -175,10 +201,48 @@ export interface PactV1 {
   openRails?: {
     metadataHash: Hex;
     paycardId: Hex;
+    genesisTimestamp: number;
+    nonceChannel: number;
+    nonceValue: number;
+    preparedAt: IsoDate;
     openingTxHash?: Hex;
+    openingObservation?: OpenRailsOpeningObservationV1;
+    settlements?: OpenRailsSettlementObservationV1[];
   };
   createdAt: IsoDate;
   updatedAt: IsoDate;
+}
+
+
+export interface OpenRailsOpeningObservationV1 {
+  version: "openrails-opening-observation-v1";
+  transactionHash: Hex;
+  chainId: number;
+  vault: Address;
+  paycardId: Hex;
+  metadataHash: Hex;
+  payer: Address;
+  recipient: Address;
+  residualRecipient: Address;
+  poolAllocationBaseUnits: string;
+  flowVelocityBaseUnitsPerSecond: string;
+  genesisTimestamp: number;
+  lifespanSeconds: number;
+  blockNumber: number;
+  observedAt: IsoDate;
+}
+
+export interface OpenRailsSettlementObservationV1 {
+  version: "openrails-settlement-observation-v1";
+  transactionHash: Hex;
+  chainId: number;
+  vault: Address;
+  paycardId: Hex;
+  recipient: Address;
+  settledAmountBaseUnits: string;
+  final: boolean;
+  blockNumber: number;
+  observedAt: IsoDate;
 }
 
 export interface PactEventV1 {
@@ -258,6 +322,7 @@ export interface BaphometDecisionV1 {
   version: "openrails-baphomet-decision-v1";
   decisionId: string;
   proposalId: string;
+  proposalHash: Hex;
   workspaceId: string;
   pathId: string;
   pathHash: Hex;
@@ -313,6 +378,7 @@ export interface ExecutionCheckpointV1 {
   pactId: string;
   pathId: string;
   paycardId?: Hex;
+  termsHash: Hex;
   actor: Address;
   counterparty: Address;
   checkpointIndex: number;
@@ -323,8 +389,9 @@ export interface ExecutionCheckpointV1 {
   evidenceUri?: string;
   units?: { type: string; completed: string; total?: string };
   observedAt: IsoDate;
+  validUntil: IsoDate;
   submittedBy: Address;
-  signature?: Hex;
+  signature: Hex;
 }
 
 export interface VerificationDecisionV1 {
@@ -364,6 +431,9 @@ export interface GaiaCaseV1 {
   };
   requestedRemedy: string;
   resolutionPolicyId: string;
+  claimHash: Hex;
+  claimValidUntil: IsoDate;
+  claimSignature: Hex;
   status: "open" | "review" | "resolved" | "dismissed" | "rectification_required" | "rectified";
   decision?: "dismiss" | "close_and_return_residual" | "replacement_pact" | "compensating_pact" | "manual_review";
   resolutionSummary?: string;
@@ -445,5 +515,6 @@ export interface KernelStateV1 {
   rectifications: Record<string, RectificationObligationV1>;
   jobs: Record<string, RuntimeJobV1>;
   events: KernelEventV1[];
+  workspaceCommandNonces: Record<string, number>;
   idempotency: Record<string, { fingerprint: Hex; result: Record<string, unknown> }>;
 }

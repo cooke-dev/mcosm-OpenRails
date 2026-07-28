@@ -77,13 +77,14 @@ export class VerificationPluginRegistry {
   }
 }
 
-export function createHashEqualityPlugin(manifest: VerificationPluginManifestV1): VerificationPlugin {
+export function createDevelopmentHashSyntaxPlugin(manifest: VerificationPluginManifestV1): VerificationPlugin {
   return {
     manifest,
     async evaluate(checkpoint) {
+      const syntacticallyValid = /^0x[0-9a-fA-F]{64}$/.test(checkpoint.evidenceHash);
       return {
-        decision: /^0x[0-9a-fA-F]{64}$/.test(checkpoint.evidenceHash) ? "approved" : "rejected",
-        reasonCodes: /^0x[0-9a-fA-F]{64}$/.test(checkpoint.evidenceHash) ? ["EVIDENCE_HASH_VALID"] : ["EVIDENCE_HASH_INVALID"],
+        decision: syntacticallyValid ? "review" : "rejected",
+        reasonCodes: syntacticallyValid ? ["DEV_HASH_SYNTAX_VALID_REQUIRES_REVIEW"] : ["EVIDENCE_HASH_INVALID"],
       };
     },
   };

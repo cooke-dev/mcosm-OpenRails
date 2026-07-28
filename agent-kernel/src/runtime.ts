@@ -16,10 +16,16 @@ import { VerificationPluginRegistry } from "./plugins.js";
 import type { KernelStore } from "./store.js";
 import {
   agentRegistrationTypedData,
+  assertPactTermsIntegrity,
+  checkpointTypedData,
+  gaiaCaseClaimHash,
+  gaiaCaseClaimTypedData,
+  pactTermsHash,
   pactTypedData,
   pathTypedData,
   workspaceTypedData,
   verificationPluginTypedData,
+  workspaceCommandTypedData,
   type AuthoritySignatureVerifier,
 } from "./typedData.js";
 import type {
@@ -33,6 +39,8 @@ import type {
   Hex,
   KernelEventV1,
   KernelStateV1,
+  OpenRailsOpeningObservationV1,
+  OpenRailsSettlementObservationV1,
   PactEventV1,
   PactV1,
   PathV1,
@@ -41,8 +49,24 @@ import type {
   SignedArtifactV1,
   VerificationDecisionV1,
   VerificationPluginManifestV1,
+  WorkspaceCommandV1,
   WorkspaceV1,
 } from "./types.js";
+
+export interface OpenRailsChainVerifier {
+  verifyOpening(input: {
+    pact: PactV1;
+    metadataHash: Hex;
+    paycardId: Hex;
+    openingTxHash: Hex;
+  }): Promise<OpenRailsOpeningObservationV1>;
+  verifySettlement(input: {
+    pact: PactV1;
+    txHash: Hex;
+    settledAmountBaseUnits: string;
+    final: boolean;
+  }): Promise<OpenRailsSettlementObservationV1>;
+}
 
 export interface KernelOptions {
   store: KernelStore;
@@ -50,6 +74,7 @@ export interface KernelOptions {
   actionRegistry?: ActionRegistry;
   pluginRegistry?: VerificationPluginRegistry;
   identityResolver?: CounterpartyIdentityResolver;
+  chainVerifier?: OpenRailsChainVerifier;
   now?: () => Date;
 }
 
@@ -85,6 +110,34 @@ function assertRevision(actual: number, expected: number, label: string): void {
   if (actual !== expected) throw new Error(`${label} revision conflict: expected ${expected}, found ${actual}`);
 }
 
+async function authorizeWorkspaceCommand(input: {
+  state: KernelStateV1;
+  command: WorkspaceCommandV1;
+  signature: Hex;
+  operation: WorkspaceCommandV1["operation"];
+  payload: unknown;
+  verifier: AuthoritySignatureVerifier;
+  now: () => Date;
+}): Promise<WorkspaceV1> {
+  const workspace = requireWorkspace(input.state, input.command.workspaceId);
+  if (workspace.status !== "active") throw new Error("Workspace is not active");
+  if (input.command.operation !== input.operation) throw new Error("Workspace command operation mismatch");
+  if (input.command.payloadHash !== hashCanonical(input.payload)) throw new Error("Workspace command payload hash mismatch");
+  if (input.command.workspaceRevision !== workspace.revision) throw new Error("Workspace command revision is stale");
+  const expectedNonce = input.state.workspaceCommandNonces[workspace.workspaceId] ?? 0;
+  if (!Number.isSafeInteger(input.command.nonce) || input.command.nonce !== expectedNonce) throw new Error(`Workspace command nonce mismatch: expected ${expectedNonce}`);
+  const nowMs = input.now().getTime();
+  const issuedAt = parseIso(input.command.issuedAt, "command issuedAt");
+  const expiresAt = parseIso(input.command.expiresAt, "command expiresAt");
+  if (issuedAt > nowMs + 30_000) throw new Error("Workspace command issuedAt is in the future");
+  if (expiresAt <= nowMs) throw new Error("Workspace command expired");
+  if (expiresAt - issuedAt > 15 * 60_000) throw new Error("Workspace command lifetime exceeds 15 minutes");
+  const valid = await input.verifier.verify({ typedData: workspaceCommandTypedData(input.command), signature: input.signature, expectedSigner: workspace.authorityAccount });
+  if (!valid) throw new Error("Workspace command signature is invalid");
+  input.state.workspaceCommandNonces[workspace.workspaceId] = expectedNonce + 1;
+  return workspace;
+}
+
 function event(state: KernelStateV1, input: Omit<KernelEventV1, "version" | "eventId">): void {
   state.events.push({
     version: "openrails-kernel-event-v1",
@@ -112,6 +165,43 @@ function pactEvent(state: KernelStateV1, pact: PactV1, type: string, actor: stri
 
 function assertWorkspaceId(value: string): void {
   if (!/^[A-Za-z0-9._:-]{3,96}$/.test(value)) throw new Error("invalid Workspace ID");
+}
+
+function assertWorkspace(workspace: WorkspaceV1): void {
+  if (workspace.version !== "openrails-workspace-v1") throw new Error("unsupported Workspace version");
+  assertWorkspaceId(workspace.workspaceId);
+  assertDomainId(workspace.principalId, "Principal ID");
+  assertAddress(workspace.authorityAccount, "Workspace authority");
+  if (!Number.isSafeInteger(workspace.revision) || workspace.revision < 1) throw new Error("Workspace revision must be positive");
+  if (!Array.isArray(workspace.members) || workspace.members.length === 0) throw new Error("Workspace requires at least one member");
+  if (!workspace.members.some((member) => member.status === "active" && member.roles.includes("owner") && member.address.toLowerCase() === workspace.authorityAccount.toLowerCase())) throw new Error("Workspace authority must be an active owner member");
+  for (const member of workspace.members) assertAddress(member.address, "Workspace member");
+}
+
+function assertAgent(agent: AgentIdentityV1): void {
+  if (agent.version !== "openrails-agent-identity-v1") throw new Error("unsupported Agent version");
+  assertDomainId(agent.agentId, "Agent ID");
+  assertWorkspaceId(agent.workspaceId);
+  assertAddress(agent.operator, "Agent operator");
+  assertHex32(agent.runtimeCredentialHash, "Agent runtimeCredentialHash");
+  if (!Number.isSafeInteger(agent.revision) || agent.revision < 1) throw new Error("Agent revision must be positive");
+  if (!Array.isArray(agent.capabilities) || !Array.isArray(agent.permittedActionTypes) || !Array.isArray(agent.assignedPathIds)) throw new Error("Agent capability and assignment fields must be arrays");
+  if (agent.expiresAt && parseIso(agent.expiresAt, "Agent expiresAt") <= parseIso(agent.createdAt, "Agent createdAt")) throw new Error("Agent expiry must be after creation");
+}
+
+function assertProposal(proposal: AgentProposalV1): void {
+  if (proposal.version !== "openrails-agent-proposal-v1") throw new Error("unsupported Proposal version");
+  assertDomainId(proposal.proposalId, "Proposal ID");
+  assertWorkspaceId(proposal.workspaceId);
+  assertDomainId(proposal.pathId, "Path ID");
+  assertDomainId(proposal.agentId, "Agent ID");
+  assertAddress(proposal.asset, "Proposal asset");
+  if (proposal.counterparty) assertAddress(proposal.counterparty, "Proposal counterparty");
+  parseBaseUnits(proposal.requestedAllocationBaseUnits, "requested allocation", false);
+  parseBaseUnits(proposal.requestedVelocityBaseUnitsPerSecond, "requested velocity", false);
+  if (!Number.isSafeInteger(proposal.requestedDurationSeconds) || proposal.requestedDurationSeconds <= 0) throw new Error("Proposal duration must be positive");
+  parseIso(proposal.requestedAt, "Proposal requestedAt");
+  if (!/^[A-Za-z0-9._:-]{3,160}$/.test(proposal.idempotencyKey)) throw new Error("invalid Proposal idempotency key");
 }
 
 function assertDomainId(value: string, label: string): void {
@@ -149,6 +239,7 @@ function assertPact(pact: PactV1): void {
   parseBaseUnits(pact.paymentTerms.maximumAllocationBaseUnits, "Pact allocation", false);
   parseBaseUnits(pact.paymentTerms.velocityBaseUnitsPerSecond, "Pact velocity", false);
   if (!Number.isSafeInteger(pact.paymentTerms.lifespanSeconds) || pact.paymentTerms.lifespanSeconds <= 0) throw new Error("Pact lifespan must be positive");
+  assertPactTermsIntegrity(pact);
 }
 
 export class OpenRailsAgentKernel {
@@ -163,6 +254,29 @@ export class OpenRailsAgentKernel {
   }
 
   async state(): Promise<KernelStateV1> { return this.options.store.load(); }
+
+  async prepareWorkspaceCommand(input: { workspaceId: string; operation: WorkspaceCommandV1["operation"]; payload: unknown; ttlSeconds?: number }): Promise<{ command: WorkspaceCommandV1; typedData: ReturnType<typeof workspaceCommandTypedData> }> {
+    const state = await this.state();
+    const workspace = requireWorkspace(state, input.workspaceId);
+    const ttlSeconds = input.ttlSeconds ?? 300;
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 30 || ttlSeconds > 900) throw new Error("Workspace command ttlSeconds must be between 30 and 900");
+    const issuedAt = nowIso(this.now);
+    const commandCore = {
+      workspaceId: workspace.workspaceId,
+      operation: input.operation,
+      payloadHash: hashCanonical(input.payload),
+      workspaceRevision: workspace.revision,
+      nonce: state.workspaceCommandNonces[workspace.workspaceId] ?? 0,
+      issuedAt,
+      expiresAt: new Date(this.now().getTime() + ttlSeconds * 1000).toISOString(),
+    };
+    const command: WorkspaceCommandV1 = {
+      version: "openrails-workspace-command-v1",
+      commandId: stableId("command", commandCore),
+      ...commandCore,
+    };
+    return { command, typedData: workspaceCommandTypedData(command) };
+  }
 
   prepareWorkspace(input: Omit<WorkspaceV1, "version" | "revision" | "createdAt" | "updatedAt" | "members" | "status"> & { members?: WorkspaceV1["members"] }) {
     assertWorkspaceId(input.workspaceId);
@@ -182,6 +296,7 @@ export class OpenRailsAgentKernel {
   }
 
   async registerWorkspace(input: { workspace: WorkspaceV1; signature: Hex }): Promise<SignedArtifactV1<WorkspaceV1>> {
+    assertWorkspace(input.workspace);
     const typedData = workspaceTypedData(input.workspace);
     const valid = await this.options.signatureVerifier.verify({ typedData, signature: input.signature, expectedSigner: input.workspace.authorityAccount });
     if (!valid) throw new Error("Workspace authority signature is invalid");
@@ -217,6 +332,7 @@ export class OpenRailsAgentKernel {
   }
 
   async registerAgent(input: { agent: AgentIdentityV1; authoritySigner: Address; signature: Hex }): Promise<AgentIdentityV1> {
+    assertAgent(input.agent);
     return this.options.store.transact(async (state) => {
       const workspace = requireWorkspace(state, input.agent.workspaceId);
       assertAuthority(workspace, input.authoritySigner);
@@ -239,15 +355,24 @@ export class OpenRailsAgentKernel {
     });
   }
 
-  async setAgentStatus(input: { workspaceId: string; agentId: string; status: AgentIdentityV1["status"]; authoritySigner: Address }): Promise<AgentIdentityV1> {
-    return this.options.store.transact((state) => {
-      const workspace = requireWorkspace(state, input.workspaceId);
-      assertAuthority(workspace, input.authoritySigner);
+  async setAgentStatus(input: {
+    workspaceId: string;
+    agentId: string;
+    status: AgentIdentityV1["status"];
+    command: WorkspaceCommandV1;
+    signature: Hex;
+  }): Promise<AgentIdentityV1> {
+    return this.options.store.transact(async (state) => {
+      const payload = { workspaceId: input.workspaceId, agentId: input.agentId, status: input.status };
+      const workspace = await authorizeWorkspaceCommand({
+        state, command: input.command, signature: input.signature, operation: "set_agent_status", payload, verifier: this.options.signatureVerifier, now: this.now,
+      });
+      if (workspace.workspaceId !== input.workspaceId) throw new Error("Workspace command target mismatch");
       const agent = requireAgent(state, input.agentId);
       if (agent.workspaceId !== workspace.workspaceId) throw new Error("Agent Workspace mismatch");
       agent.status = input.status;
       agent.revision += 1;
-      event(state, { workspaceId: workspace.workspaceId, subjectType: "agent", subjectId: agent.agentId, type: `AGENT_${input.status.toUpperCase()}`, actor: input.authoritySigner, at: nowIso(this.now), data: { revision: agent.revision } });
+      event(state, { workspaceId: workspace.workspaceId, subjectType: "agent", subjectId: agent.agentId, type: `AGENT_${input.status.toUpperCase()}`, actor: workspace.authorityAccount, at: nowIso(this.now), data: { revision: agent.revision, commandId: input.command.commandId } });
       return agent;
     });
   }
@@ -293,7 +418,7 @@ export class OpenRailsAgentKernel {
   }
 
   async submitProposal(proposal: AgentProposalV1): Promise<{ proposal: AgentProposalV1; job: RuntimeJobV1 }> {
-    assertDomainId(proposal.proposalId, "Proposal ID");
+    assertProposal(proposal);
     const fingerprint = hashCanonical(proposal);
     return this.options.store.transact((state) => {
       const idempotencyKey = `${proposal.workspaceId}:proposal:${proposal.idempotencyKey}`;
@@ -386,20 +511,36 @@ export class OpenRailsAgentKernel {
   async createPactFromProposal(input: {
     proposalId: string;
     pactId: string;
-    counterparty: Address;
-    initiator: Address;
     commercialTerms: Record<string, unknown>;
     completionPolicyId: string;
     disputePolicyId: string;
     requiresCounterpartySignature?: boolean;
   }): Promise<PactV1> {
-    return this.options.store.transact((state) => {
+    return this.options.store.transact(async (state) => {
       const proposal = state.proposals[input.proposalId];
       if (!proposal) throw new Error("Proposal not found");
-      const decision = Object.values(state.decisions).find((entry) => entry.proposalId === proposal.proposalId);
-      if (!decision || decision.result !== "ALLOW") throw new Error("Proposal is not allowed by Baphomet");
-      const signedPath = requirePath(state, proposal.pathId);
+      if (!proposal.counterparty) throw new Error("Payable Pact requires the approved proposal counterparty");
       if (state.pacts[input.pactId]) throw new Error("Pact already exists");
+
+      const workspace = requireWorkspace(state, proposal.workspaceId);
+      if (workspace.status !== "active") throw new Error("Workspace is not active");
+      const agent = requireAgent(state, proposal.agentId);
+      if (agent.workspaceId !== workspace.workspaceId || agent.status !== "active") throw new Error("Agent is not active in the Workspace");
+
+      const evaluatorOptions = {
+        actionRegistry: this.actions,
+        now: this.now,
+        ...(this.options.identityResolver ? { identityResolver: this.options.identityResolver } : {}),
+      };
+      const { decision } = await evaluateProposal(state, proposal, evaluatorOptions);
+      state.decisions[decision.decisionId] = decision;
+      if (decision.result !== "ALLOW") throw new Error(`Proposal is not currently allowed by Baphomet: ${decision.reasonCodes.join(", ")}`);
+
+      const signedPath = requirePath(state, proposal.pathId);
+      if (decision.pathHash !== signedPath.hash) throw new Error("Baphomet decision is stale for the active Path revision");
+      const proposalHash = hashCanonical(proposal);
+      if (decision.proposalHash !== proposalHash) throw new Error("Baphomet decision proposal hash mismatch");
+
       const at = nowIso(this.now);
       const pact: PactV1 = {
         version: "openrails-pact-v1",
@@ -408,9 +549,14 @@ export class OpenRailsAgentKernel {
         pathId: proposal.pathId,
         pathRevision: signedPath.artifact.revision,
         pathHash: signedPath.hash,
-        initiator: input.initiator,
+        proposalId: proposal.proposalId,
+        proposalHash,
+        decisionId: decision.decisionId,
+        decisionHash: decision.decisionHash,
+        termsHash: ("0x" + "00".repeat(32)) as Hex,
+        initiator: workspace.authorityAccount,
         agentId: proposal.agentId,
-        counterparty: input.counterparty,
+        counterparty: proposal.counterparty,
         actionType: proposal.actionType,
         specification: clone(proposal.specification),
         commercialTerms: clone(input.commercialTerms),
@@ -418,12 +564,12 @@ export class OpenRailsAgentKernel {
           chainId: 91_342,
           vault: "0x623daf607A0C8F841a72012BCE19cfe9E5fbAbf1",
           token: proposal.asset,
-          payer: input.initiator,
-          recipient: input.counterparty,
+          payer: workspace.authorityAccount,
+          recipient: proposal.counterparty,
           maximumAllocationBaseUnits: proposal.requestedAllocationBaseUnits,
           velocityBaseUnitsPerSecond: proposal.requestedVelocityBaseUnitsPerSecond,
           lifespanSeconds: proposal.requestedDurationSeconds,
-          residualRecipient: input.initiator,
+          residualRecipient: workspace.authorityAccount,
         },
         evidencePolicyId: proposal.evidencePolicyId,
         completionPolicyId: input.completionPolicyId,
@@ -434,17 +580,24 @@ export class OpenRailsAgentKernel {
         createdAt: at,
         updatedAt: at,
       };
+      pact.termsHash = pactTermsHash(pact);
       assertPact(pact);
       state.pacts[pact.pactId] = pact;
       state.pactSignatures[pact.pactId] = [];
-      pactEvent(state, pact, "PACT_CREATED", proposal.agentId, { proposalId: proposal.proposalId, decisionId: decision.decisionId, pactHash: hashCanonical(pact) }, at);
+      pactEvent(state, pact, "PACT_CREATED", proposal.agentId, {
+        proposalId: proposal.proposalId,
+        proposalHash,
+        decisionId: decision.decisionId,
+        decisionHash: decision.decisionHash,
+        termsHash: pact.termsHash,
+      }, at);
       return pact;
     });
   }
 
   preparePactSignature(pact: PactV1) {
     assertPact(pact);
-    return { pact: clone(pact), hash: hashCanonical(pact), typedData: pactTypedData(pact) };
+    return { pact: clone(pact), hash: pact.termsHash, typedData: pactTypedData(pact) };
   }
 
   async signPact(input: { pactId: string; signer: Address; signature: Hex }): Promise<SignedArtifactV1<PactV1>> {
@@ -456,7 +609,7 @@ export class OpenRailsAgentKernel {
       const typedData = pactTypedData(pact);
       const valid = await this.options.signatureVerifier.verify({ typedData, signature: input.signature, expectedSigner: input.signer });
       if (!valid) throw new Error("Pact signature is invalid");
-      const signed: SignedArtifactV1<PactV1> = { artifact: clone(pact), hash: hashCanonical(pact), typedData, signer: input.signer, signature: input.signature, signedAt: nowIso(this.now) };
+      const signed: SignedArtifactV1<PactV1> = { artifact: clone(pact), hash: pact.termsHash, typedData, signer: input.signer, signature: input.signature, signedAt: nowIso(this.now) };
       const signatures = state.pactSignatures[pact.pactId] ?? [];
       if (!signatures.some((entry) => entry.signer.toLowerCase() === input.signer.toLowerCase())) signatures.push(signed);
       state.pactSignatures[pact.pactId] = signatures;
@@ -466,40 +619,102 @@ export class OpenRailsAgentKernel {
         pact.status = "accepted";
         pact.revision += 1;
         pact.updatedAt = nowIso(this.now);
-        pactEvent(state, pact, "PACT_ACCEPTED", input.signer, { pactHash: signed.hash, signers: signatures.map((entry) => entry.signer) }, pact.updatedAt);
+        pactEvent(state, pact, "PACT_ACCEPTED", input.signer, { termsHash: signed.hash, signers: signatures.map((entry) => entry.signer) }, pact.updatedAt);
       } else {
-        pactEvent(state, pact, "PACT_SIGNATURE_ADDED", input.signer, { pactHash: signed.hash }, signed.signedAt);
+        pactEvent(state, pact, "PACT_SIGNATURE_ADDED", input.signer, { termsHash: signed.hash }, signed.signedAt);
       }
       return signed;
     });
   }
 
-  async bindOpenRailsPayment(input: { pactId: string; metadataHash: Hex; paycardId: Hex; actor: Address; openingTxHash?: Hex }): Promise<PactV1> {
+  async bindOpenRailsPayment(input: {
+    pactId: string;
+    metadataHash: Hex;
+    paycardId: Hex;
+    actor: Address;
+    genesisTimestamp?: number;
+    nonceChannel?: number;
+    nonceValue?: number;
+    openingTxHash?: Hex;
+  }): Promise<PactV1> {
     assertHex32(input.metadataHash, "metadataHash");
     assertHex32(input.paycardId, "paycardId");
     if (input.openingTxHash) assertHex32(input.openingTxHash, "openingTxHash");
+
+    if (!input.openingTxHash) {
+      if (!Number.isSafeInteger(input.genesisTimestamp) || (input.genesisTimestamp ?? -1) < 0) throw new Error("genesisTimestamp is required for payment preparation");
+      if (!Number.isSafeInteger(input.nonceChannel) || (input.nonceChannel ?? -1) < 0) throw new Error("nonceChannel is required for payment preparation");
+      if (!Number.isSafeInteger(input.nonceValue) || (input.nonceValue ?? -1) < 0) throw new Error("nonceValue is required for payment preparation");
+      return this.options.store.transact((state) => {
+        const pact = requirePact(state, input.pactId);
+        assertPact(pact);
+        if (!['accepted', 'payment_prepared', 'awaiting_wallet'].includes(pact.status)) throw new Error("Pact is not ready for OpenRails preparation");
+        pact.openRails = {
+          metadataHash: input.metadataHash,
+          paycardId: input.paycardId,
+          genesisTimestamp: input.genesisTimestamp!,
+          nonceChannel: input.nonceChannel!,
+          nonceValue: input.nonceValue!,
+          preparedAt: nowIso(this.now),
+          settlements: [],
+        };
+        pact.status = "payment_prepared";
+        pact.revision += 1;
+        pact.updatedAt = pact.openRails.preparedAt;
+        pactEvent(state, pact, "PAYMENT_PREPARED", input.actor, {
+          termsHash: pact.termsHash,
+          metadataHash: input.metadataHash,
+          paycardId: input.paycardId,
+          genesisTimestamp: input.genesisTimestamp,
+          nonceChannel: input.nonceChannel,
+          nonceValue: input.nonceValue,
+          allocationBaseUnits: pact.paymentTerms.maximumAllocationBaseUnits,
+        }, pact.updatedAt);
+        return pact;
+      });
+    }
+
+    if (!this.options.chainVerifier) throw new Error("Canonical OpenRails chain verifier is required to activate a Pact");
+    const before = requirePact(await this.state(), input.pactId);
+    assertPact(before);
+    if (!before.openRails) throw new Error("Payment must be prepared before canonical opening verification");
+    if (before.openRails.metadataHash !== input.metadataHash || before.openRails.paycardId !== input.paycardId) throw new Error("Opening transaction does not match the prepared Pact payment");
+    const observation = await this.options.chainVerifier.verifyOpening({
+      pact: clone(before),
+      metadataHash: input.metadataHash,
+      paycardId: input.paycardId,
+      openingTxHash: input.openingTxHash,
+    });
+
     return this.options.store.transact((state) => {
       const pact = requirePact(state, input.pactId);
-      if (!['accepted', 'payment_prepared', 'awaiting_wallet'].includes(pact.status)) throw new Error("Pact is not ready for OpenRails binding");
-      pact.openRails = {
-        metadataHash: input.metadataHash,
-        paycardId: input.paycardId,
-        ...(input.openingTxHash ? { openingTxHash: input.openingTxHash } : {}),
-      };
-      pact.status = input.openingTxHash ? "active" : "payment_prepared";
+      assertPact(pact);
+      if (!pact.openRails) throw new Error("Payment preparation disappeared before opening verification");
+      if (!['payment_prepared', 'awaiting_wallet'].includes(pact.status)) throw new Error("Pact is not awaiting canonical OpenRails opening");
+      if (pact.openRails.metadataHash !== input.metadataHash || pact.openRails.paycardId !== input.paycardId) throw new Error("Prepared payment changed during opening verification");
+      pact.openRails.openingTxHash = input.openingTxHash!;
+      pact.openRails.openingObservation = observation;
+      pact.status = "active";
       pact.revision += 1;
       pact.updatedAt = nowIso(this.now);
-      pactEvent(state, pact, input.openingTxHash ? "PAYMENT_OPENED" : "PAYMENT_PREPARED", input.actor, {
+      pactEvent(state, pact, "PAYMENT_OPENED_CANONICAL", input.actor, {
+        termsHash: pact.termsHash,
         metadataHash: input.metadataHash,
         paycardId: input.paycardId,
+        openingTxHash: input.openingTxHash,
+        blockNumber: observation.blockNumber,
         allocationBaseUnits: pact.paymentTerms.maximumAllocationBaseUnits,
-        ...(input.openingTxHash ? { openingTxHash: input.openingTxHash } : {}),
       }, pact.updatedAt);
       return pact;
     });
   }
 
-  async installPlugin(manifest: VerificationPluginManifestV1, authoritySigner: Address): Promise<VerificationPluginManifestV1> {
+  async installPlugin(input: { manifest: VerificationPluginManifestV1; command: WorkspaceCommandV1; signature: Hex }): Promise<VerificationPluginManifestV1> {
+    const manifest = input.manifest;
+    if (manifest.version !== "openrails-verification-plugin-v1") throw new Error("unsupported verification plugin manifest version");
+    assertDomainId(manifest.pluginId, "plugin ID");
+    if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(manifest.pluginVersion)) throw new Error("pluginVersion must be semver-like");
+    assertAddress(manifest.publisher, "plugin publisher");
     assertHex32(manifest.codeDigest, "plugin codeDigest");
     if (manifest.installedWorkspaceIds.length !== 1) throw new Error("V1 plugin installation must target exactly one Workspace");
     const publisherValid = await this.options.signatureVerifier.verify({
@@ -508,30 +723,50 @@ export class OpenRailsAgentKernel {
       expectedSigner: manifest.publisher,
     });
     if (!publisherValid) throw new Error("plugin publisher signature is invalid");
-    return this.options.store.transact((state) => {
-      const workspace = requireWorkspace(state, manifest.installedWorkspaceIds[0]!);
-      assertAuthority(workspace, authoritySigner);
+    return this.options.store.transact(async (state) => {
+      const workspaceId = manifest.installedWorkspaceIds[0]!;
+      const payload = { workspaceId, pluginId: manifest.pluginId, pluginVersion: manifest.pluginVersion, codeDigest: manifest.codeDigest };
+      const workspace = await authorizeWorkspaceCommand({
+        state, command: input.command, signature: input.signature, operation: "install_plugin", payload, verifier: this.options.signatureVerifier, now: this.now,
+      });
+      if (workspace.workspaceId !== workspaceId) throw new Error("Workspace command target mismatch");
       const key = this.plugins.key(manifest.pluginId, manifest.pluginVersion);
       const existing = state.plugins[key];
       if (existing && existing.codeDigest !== manifest.codeDigest) throw new Error("plugin version digest conflict");
       state.plugins[key] = clone(manifest);
-      event(state, { workspaceId: workspace.workspaceId, subjectType: "plugin", subjectId: key, type: "PLUGIN_INSTALLED", actor: authoritySigner, at: nowIso(this.now), data: { codeDigest: manifest.codeDigest, publisher: manifest.publisher } });
+      event(state, { workspaceId: workspace.workspaceId, subjectType: "plugin", subjectId: key, type: "PLUGIN_INSTALLED", actor: workspace.authorityAccount, at: nowIso(this.now), data: { codeDigest: manifest.codeDigest, publisher: manifest.publisher, commandId: input.command.commandId } });
       return manifest;
     });
   }
 
   async submitCheckpoint(checkpoint: ExecutionCheckpointV1): Promise<ExecutionCheckpointV1> {
     assertHex32(checkpoint.evidenceHash, "checkpoint evidenceHash");
-    return this.options.store.transact((state) => {
+    assertHex32(checkpoint.termsHash, "checkpoint termsHash");
+    if (checkpoint.paycardId) assertHex32(checkpoint.paycardId, "checkpoint paycardId");
+    if (parseIso(checkpoint.validUntil, "checkpoint validUntil") <= this.now().getTime()) throw new Error("checkpoint signature expired");
+    return this.options.store.transact(async (state) => {
       const pact = requirePact(state, checkpoint.pactId);
+      assertPact(pact);
+      const workspace = requireWorkspace(state, pact.workspaceId);
+      const agent = requireAgent(state, pact.agentId);
       if (pact.workspaceId !== checkpoint.workspaceId || pact.pathId !== checkpoint.pathId) throw new Error("checkpoint Pact binding mismatch");
+      if (checkpoint.termsHash !== pact.termsHash) throw new Error("checkpoint Pact terms hash mismatch");
+      if (checkpoint.counterparty.toLowerCase() !== pact.counterparty.toLowerCase()) throw new Error("checkpoint counterparty mismatch");
+      if (pact.openRails?.paycardId && checkpoint.paycardId !== pact.openRails.paycardId) throw new Error("checkpoint Paycard binding mismatch");
       if (!["active", "performing", "disputed"].includes(pact.status)) throw new Error("Pact is not accepting checkpoints");
       if (state.checkpoints[checkpoint.checkpointId]) throw new Error("checkpoint already exists");
+      const expectedIndex = Object.values(state.checkpoints).filter((entry) => entry.pactId === pact.pactId).length + 1;
+      if (!Number.isSafeInteger(checkpoint.checkpointIndex) || checkpoint.checkpointIndex !== expectedIndex) throw new Error(`checkpoint index mismatch: expected ${expectedIndex}`);
+      const allowedSigners = [workspace.authorityAccount, pact.counterparty, agent.operator].map((entry) => entry.toLowerCase());
+      if (!allowedSigners.includes(checkpoint.submittedBy.toLowerCase())) throw new Error("checkpoint submitter is not a Pact participant or Agent operator");
+      if (checkpoint.actor.toLowerCase() !== checkpoint.submittedBy.toLowerCase()) throw new Error("checkpoint actor must match the signing submitter in V1");
+      const signatureValid = await this.options.signatureVerifier.verify({ typedData: checkpointTypedData(checkpoint), signature: checkpoint.signature, expectedSigner: checkpoint.submittedBy });
+      if (!signatureValid) throw new Error("checkpoint signature is invalid");
       state.checkpoints[checkpoint.checkpointId] = clone(checkpoint);
       if (pact.status === "active") pact.status = "performing";
       pact.revision += 1;
       pact.updatedAt = nowIso(this.now);
-      pactEvent(state, pact, "CHECKPOINT_SUBMITTED", checkpoint.submittedBy, { checkpointId: checkpoint.checkpointId, checkpointType: checkpoint.checkpointType, evidenceHash: checkpoint.evidenceHash }, checkpoint.observedAt);
+      pactEvent(state, pact, "CHECKPOINT_SUBMITTED", checkpoint.submittedBy, { checkpointId: checkpoint.checkpointId, checkpointType: checkpoint.checkpointType, evidenceHash: checkpoint.evidenceHash, termsHash: checkpoint.termsHash }, checkpoint.observedAt);
       return checkpoint;
     });
   }
@@ -560,18 +795,45 @@ export class OpenRailsAgentKernel {
     });
   }
 
-  async openGaiaCase(input: Omit<GaiaCaseV1, "version" | "status" | "createdAt" | "updatedAt">): Promise<GaiaCaseV1> {
-    return this.options.store.transact((state) => {
+  async openGaiaCase(input: Omit<GaiaCaseV1, "version" | "status" | "createdAt" | "updatedAt" | "claimHash">): Promise<GaiaCaseV1> {
+    assertDomainId(input.caseId, "Gaia case ID");
+    assertWorkspaceId(input.workspaceId);
+    assertDomainId(input.pactId, "Pact ID");
+    assertDomainId(input.pathId, "Path ID");
+    assertAddress(input.claimant, "Gaia claimant");
+    assertAddress(input.respondent, "Gaia respondent");
+    for (const commitment of input.evidenceCommitments) assertHex32(commitment, "Gaia evidence commitment");
+    if (parseIso(input.claimValidUntil, "Gaia claimValidUntil") <= this.now().getTime()) throw new Error("Gaia claim signature expired");
+    return this.options.store.transact(async (state) => {
       const pact = requirePact(state, input.pactId);
+      assertPact(pact);
+      const workspace = requireWorkspace(state, pact.workspaceId);
       if (pact.workspaceId !== input.workspaceId || pact.pathId !== input.pathId) throw new Error("Gaia Pact binding mismatch");
+      if (pact.openRails?.paycardId && input.paycardId !== pact.openRails.paycardId) throw new Error("Gaia Paycard binding mismatch");
+      const authority = workspace.authorityAccount.toLowerCase();
+      const counterparty = pact.counterparty.toLowerCase();
+      const claimant = input.claimant.toLowerCase();
+      if (claimant !== authority && claimant !== counterparty) throw new Error("Gaia claimant is not a Pact party");
+      const expectedRespondent = claimant === authority ? counterparty : authority;
+      if (input.respondent.toLowerCase() !== expectedRespondent) throw new Error("Gaia respondent is not the opposing Pact party");
       if (state.gaiaCases[input.caseId]) throw new Error("Gaia case already exists");
       const at = nowIso(this.now);
-      const value: GaiaCaseV1 = { version: "openrails-gaia-case-v1", ...input, status: "open", createdAt: at, updatedAt: at };
+      const value: GaiaCaseV1 = {
+        version: "openrails-gaia-case-v1",
+        ...input,
+        claimHash: ("0x" + "00".repeat(32)) as Hex,
+        status: "open",
+        createdAt: at,
+        updatedAt: at,
+      };
+      value.claimHash = gaiaCaseClaimHash(value);
+      const signatureValid = await this.options.signatureVerifier.verify({ typedData: gaiaCaseClaimTypedData(value), signature: value.claimSignature, expectedSigner: value.claimant });
+      if (!signatureValid) throw new Error("Gaia claim signature is invalid");
       state.gaiaCases[value.caseId] = value;
       pact.status = "disputed";
       pact.revision += 1;
       pact.updatedAt = at;
-      pactEvent(state, pact, "GAIA_CASE_OPENED", input.claimant, { caseId: value.caseId, reasonCode: value.reasonCode, requestedRemedy: value.requestedRemedy }, at);
+      pactEvent(state, pact, "GAIA_CASE_OPENED", input.claimant, { caseId: value.caseId, claimHash: value.claimHash, reasonCode: value.reasonCode, requestedRemedy: value.requestedRemedy }, at);
       return value;
     });
   }
@@ -582,11 +844,23 @@ export class OpenRailsAgentKernel {
     decision: NonNullable<GaiaCaseV1["decision"]>;
     resolutionSummary: string;
     rectificationTerms?: Record<string, unknown>;
+    command: WorkspaceCommandV1;
+    signature: Hex;
   }): Promise<{ gaiaCase: GaiaCaseV1; obligation?: RectificationObligationV1 }> {
-    return this.options.store.transact((state) => {
+    return this.options.store.transact(async (state) => {
       const gaia = state.gaiaCases[input.caseId];
       if (!gaia) throw new Error("Gaia case not found");
-      const workspace = requireWorkspace(state, gaia.workspaceId);
+      const payload = {
+        caseId: input.caseId,
+        resolver: input.resolver,
+        decision: input.decision,
+        resolutionSummary: input.resolutionSummary,
+        rectificationTerms: input.rectificationTerms ?? {},
+      };
+      const workspace = await authorizeWorkspaceCommand({
+        state, command: input.command, signature: input.signature, operation: "resolve_gaia", payload, verifier: this.options.signatureVerifier, now: this.now,
+      });
+      if (workspace.workspaceId !== gaia.workspaceId) throw new Error("Workspace command target mismatch");
       const resolverMember = workspace.members.find((member) => member.address.toLowerCase() === input.resolver.toLowerCase() && member.status === "active" && member.roles.some((role) => role === "owner" || role === "gaia_resolver"));
       if (!resolverMember) throw new Error("resolver lacks Gaia authority");
       const pact = requirePact(state, gaia.pactId);
@@ -619,7 +893,7 @@ export class OpenRailsAgentKernel {
       }
       pact.revision += 1;
       pact.updatedAt = gaia.updatedAt;
-      pactEvent(state, pact, "GAIA_RESOLVED", input.resolver, { caseId: gaia.caseId, decision: input.decision, ...(obligation ? { obligationId: obligation.obligationId } : {}) }, gaia.updatedAt);
+      pactEvent(state, pact, "GAIA_RESOLVED", input.resolver, { caseId: gaia.caseId, decision: input.decision, commandId: input.command.commandId, ...(obligation ? { obligationId: obligation.obligationId } : {}) }, gaia.updatedAt);
       return obligation ? { gaiaCase: gaia, obligation } : { gaiaCase: gaia };
     });
   }
@@ -636,27 +910,49 @@ export class OpenRailsAgentKernel {
     const pact = requirePact(state, pactId);
     const path = requirePath(state, pact.pathId);
     if (path.hash !== pact.pathHash || path.artifact.revision !== pact.pathRevision) throw new Error("Pact is bound to a stale Path revision");
-    const pactHash = hashCanonical(pact);
+    assertPact(pact);
     const evidencePolicyHash = hashCanonical({ evidencePolicyId: pact.evidencePolicyId });
     return {
       workflowId: pact.pactId,
-      metadataRef: `orpk1:${pact.pathRevision}:${pact.pathHash.slice(2)}:${evidencePolicyHash.slice(2)}`,
-      descriptionHash: pactHash,
-      salt: pactHash,
+      metadataRef: `orpk1:${pact.pathRevision}:${pact.pathHash.slice(2)}:${pact.decisionHash.slice(2)}:${evidencePolicyHash.slice(2)}`,
+      descriptionHash: pact.termsHash,
+      salt: pact.termsHash,
       pathHash: pact.pathHash,
-      pactHash,
+      pactHash: pact.termsHash,
     };
   }
 
   async recordPactSettlement(input: { pactId: string; actor: string; txHash: Hex; settledAmountBaseUnits: string; final: boolean }): Promise<PactV1> {
     assertHex32(input.txHash, "settlement txHash");
     parseBaseUnits(input.settledAmountBaseUnits, "settled amount", false);
+    if (!this.options.chainVerifier) throw new Error("Canonical OpenRails chain verifier is required to record settlement");
+    const before = requirePact(await this.state(), input.pactId);
+    assertPact(before);
+    if (!before.openRails?.openingObservation) throw new Error("Pact has no canonically verified OpenRails opening");
+    const observation = await this.options.chainVerifier.verifySettlement({
+      pact: clone(before),
+      txHash: input.txHash,
+      settledAmountBaseUnits: input.settledAmountBaseUnits,
+      final: input.final,
+    });
+    if (observation.final !== input.final) throw new Error("Settlement finality claim does not match canonical Paycard state");
     return this.options.store.transact((state) => {
       const pact = requirePact(state, input.pactId);
-      pact.status = input.final ? "settled" : pact.status;
+      assertPact(pact);
+      if (!pact.openRails?.openingObservation) throw new Error("Canonical opening observation disappeared before settlement recording");
+      const settlements = pact.openRails.settlements ?? [];
+      if (!settlements.some((entry) => entry.transactionHash.toLowerCase() === observation.transactionHash.toLowerCase())) settlements.push(observation);
+      pact.openRails.settlements = settlements;
+      pact.status = observation.final ? "settled" : pact.status;
       pact.revision += 1;
       pact.updatedAt = nowIso(this.now);
-      pactEvent(state, pact, input.final ? "PACT_SETTLED" : "SETTLEMENT_CONFIRMED", input.actor, { txHash: input.txHash, settledAmountBaseUnits: input.settledAmountBaseUnits }, pact.updatedAt);
+      pactEvent(state, pact, observation.final ? "PACT_SETTLED_CANONICAL" : "SETTLEMENT_CONFIRMED_CANONICAL", input.actor, {
+        termsHash: pact.termsHash,
+        txHash: input.txHash,
+        paycardId: pact.openRails.paycardId,
+        settledAmountBaseUnits: observation.settledAmountBaseUnits,
+        blockNumber: observation.blockNumber,
+      }, pact.updatedAt);
       return pact;
     });
   }
