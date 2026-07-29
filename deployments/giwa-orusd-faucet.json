@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "openrails-giwa-faucet-v1",
+  "network": "giwaSepolia",
+  "chainId": 91342,
+  "status": "funded-and-verified",
+  "deployedAt": "2026-07-29T08:40:44.809Z",
+  "updatedAt": "2026-07-29T08:40:53.175Z",
+  "deployer": "0xE4A71e75812c584a5c2E026AF5D00F63A6A3B5d0",
+  "token": {
+    "address": "0x162BCaEb04D4c82403c925d3AC9bEC8FFc1C07De",
+    "name": "OpenRails Test USD",
+    "symbol": "orUSD",
+    "decimals": 6,
+    "ownerAtDeployment": "0xE4A71e75812c584a5c2E026AF5D00F63A6A3B5d0"
+  },
+  "faucet": {
+    "address": "0x86567D16324dB05CABF7c3c4E81cD07F7765a8A4",
+    "admin": "0xE4A71e75812c584a5c2E026AF5D00F63A6A3B5d0",
+    "claimAmountBaseUnits": "1000000000",
+    "claimAmount": "1000.0",
+    "cooldownSeconds": 86400,
+    "targetReserveBaseUnits": "100000000000",
+    "targetReserve": "100000.0",
+    "reserveAtLastVerificationBaseUnits": "100000000000",
+    "reserveAtLastVerification": "100000.0"
+  },
+  "transactions": {
+    "deployment": "0x9146e19f9ea361ce2d9b8e1530bc6ff224e1ad799a06ad1c0cfa3fb8d05f39ec",
+    "funding": "0xea197d7a753842fcf5f390a101ee31674937dd043d4d5d469725e0d28cc99243"
+  },
+  "blocks": {
+    "deployment": 31969324,
+    "funding": 31969332
+  },
+  "explorerLinks": {
+    "faucet": "https://sepolia-explorer.giwa.io/address/0x86567D16324dB05CABF7c3c4E81cD07F7765a8A4",
+    "token": "https://sepolia-explorer.giwa.io/address/0x162BCaEb04D4c82403c925d3AC9bEC8FFc1C07De",
+    "deploymentTransaction": "https://sepolia-explorer.giwa.io/tx/0x9146e19f9ea361ce2d9b8e1530bc6ff224e1ad799a06ad1c0cfa3fb8d05f39ec",
+    "fundingTransaction": "https://sepolia-explorer.giwa.io/tx/0xea197d7a753842fcf5f390a101ee31674937dd043d4d5d469725e0d28cc99243"
+  },
+  "notes": [
+    "The faucet has no mint authority.",
+    "The faucet distributes only its pre-funded orUSD reserve.",
+    "orUSD is test-only and is not USDC.",
+    "Native GIWA ETH is not distributed by this faucet."
+  ]
+}

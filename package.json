@@ -2,7 +2,7 @@
   "name": "openrails-v1-substrate",
   "version": "1.0.0",
   "private": true,
-  "description": "OpenRails \u2014 GIWA-native bounded payment and agent coordination infrastructure. The deployed rail remains the custody boundary; the Agent Kernel adds Workspace, Path, Pact, Proof, BNH runtime, and Gaia.",
+  "description": "OpenRails — GIWA-native bounded payment and agent coordination infrastructure. The deployed rail remains the custody boundary; the Agent Kernel adds Workspace, Path, Pact, Proof, BNH runtime, and Gaia.",
   "main": "sdk/dist/index.js",
   "types": "sdk/dist/index.d.ts",
   "bin": {
@@ -43,7 +43,9 @@
     "test:agent-kernel": "npm run test --prefix agent-kernel",
     "check:agent-kernel": "npm run check --prefix agent-kernel",
     "agent-kernel:start": "npm run start --prefix agent-kernel",
-    "verify:giwa-agent-kernel": "npm run check:agent-kernel && npm run build:mcp && npm run smoke:mcp && npm run test:giwa-sdk && npm run test"
+    "verify:giwa-agent-kernel": "npm run check:agent-kernel && npm run build:mcp && npm run smoke:mcp && npm run test:giwa-sdk && npm run test",
+    "deploy:giwa-faucet": "npm run compile && ts-node scripts/deploy-giwa-orusd-faucet.ts",
+    "verify:giwa-faucet": "npm run compile && ts-node scripts/verify-giwa-orusd-faucet.ts"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.2.0",
