@@ -1034,7 +1034,7 @@ export class OpenRailsAgentKernel {
     };
   }
 
-  async recordPactSettlement(input: { pactId: string; actor: string; txHash: Hex; settledAmountBaseUnits: string; final: boolean }): Promise<PactV1> {
+  async recordPactSettlement(input: { pactId: string; actor: string; txHash: Hex; settledAmountBaseUnits: string; final?: boolean }): Promise<PactV1> {
     assertHex32(input.txHash, "settlement txHash");
     parseBaseUnits(input.settledAmountBaseUnits, "settled amount", false);
     if (!this.options.chainVerifier) throw new Error("Canonical OpenRails chain verifier is required to record settlement");
@@ -1045,10 +1045,10 @@ export class OpenRailsAgentKernel {
       pact: clone(before),
       txHash: input.txHash,
       settledAmountBaseUnits: input.settledAmountBaseUnits,
-      final: input.final,
+      final: input.final ?? false,
     });
     assertSettlementObservationMatchesPact(before, input.txHash, input.settledAmountBaseUnits, observation);
-    if (observation.final !== input.final) throw new Error("Settlement finality claim does not match canonical Paycard state");
+
     return this.options.store.transact((state) => {
       const pact = requirePact(state, input.pactId);
       assertPact(pact);

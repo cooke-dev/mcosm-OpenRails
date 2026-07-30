@@ -89,6 +89,16 @@ if (!paycardProvisionedEvent) {
   throw new Error('PaycardProvisioned ABI is missing');
 }
 
+const settlementFlushedEvent = vaultAbi.find(
+  (entry) =>
+    entry.type === 'event' &&
+    entry.name === 'SettlementFlushed'
+);
+
+if (!settlementFlushedEvent) {
+  throw new Error('SettlementFlushed ABI is missing');
+}
+
 function implementationManifest() {
   return {
     version: 'openrails-verification-plugin-v1',
@@ -280,12 +290,43 @@ const chainVerifier = {
       } catch { /* unrelated log */ }
     }
     if (amount.toString() !== settledAmountBaseUnits) throw new Error('GIWA settlement event amount does not match the requested observation');
+    const previouslySettled =
+      (pact.openRails.settlements ?? []).reduce(
+        (total, entry) =>
+          total +
+          BigInt(entry.settledAmountBaseUnits),
+        0n,
+      );
+
+    const allocation = BigInt(
+      pact.paymentTerms.maximumAllocationBaseUnits,
+    );
+
+    const cumulativeSettled =
+      previouslySettled + amount;
+
+    const eventFinal =
+      cumulativeSettled >= allocation;
+
     const card = await retryRpc(
       'GIWA settlement state',
-      () => readRegistry(
-        pact.openRails.paycardId,
-        receipt.blockNumber,
-      ),
+      async () => {
+        const value = await readRegistry(
+          pact.openRails.paycardId,
+        );
+
+        const chainFinal =
+          Number(value.operationalStatus) === 1 ||
+          value.availableBalance === 0n;
+
+        if (eventFinal && !chainFinal) {
+          throw new Error(
+            'Final Paycard state has not propagated yet'
+          );
+        }
+
+        return value;
+      },
     );
 
     const block = await retryRpc(
@@ -302,7 +343,7 @@ const chainVerifier = {
       paycardId: pact.openRails.paycardId,
       recipient: card.recipient,
       settledAmountBaseUnits: amount.toString(),
-      final: Number(card.operationalStatus) === 1 || card.availableBalance === 0n,
+      final: eventFinal,
       blockNumber: Number(receipt.blockNumber),
       observedAt: new Date(Number(block.timestamp) * 1000).toISOString(),
     };
@@ -798,13 +839,211 @@ async function api(req, res, requestUrl) {
     const decision = await kernel.verifyCheckpoint({ checkpointId: checkpoint.checkpointId, pluginId: PLUGIN_ID, pluginVersion: PLUGIN_VERSION });
     return send(res, 200, { checkpoint, decision, pact: await kernel.getPact(checkpoint.pactId) });
   }
+  if (
+    method === 'POST' &&
+    pathname === '/api/live/settlements/recover'
+  ) {
+    let pact = await assertPactSession(
+      input.pactId,
+      sessionAddress,
+    );
+
+    if (!pact.openRails?.paycardId) {
+      throw new Error(
+        'The Pact has no canonical Paycard binding'
+      );
+    }
+
+    const existingSettlements =
+      pact.openRails.settlements ?? [];
+
+    if (
+      pact.status === 'settled' &&
+      existingSettlements.length > 0
+    ) {
+      const latest =
+        existingSettlements.at(-1);
+
+      return send(res, 200, {
+        pact,
+        recovered: latest
+          ? [{
+              transactionHash:
+                latest.transactionHash,
+              settledAmountBaseUnits:
+                latest.settledAmountBaseUnits,
+              final: latest.final,
+              alreadyRecorded: true,
+            }]
+          : [],
+      });
+    }
+
+    const latestBlock = await retryRpc(
+      'latest GIWA settlement block',
+      () => publicClient.getBlockNumber(),
+    );
+
+    const openingBlock =
+      pact.openRails.openingObservation?.blockNumber;
+
+    const fromBlock =
+      openingBlock !== undefined
+        ? BigInt(openingBlock)
+        : latestBlock > 10_000n
+          ? latestBlock - 10_000n
+          : 0n;
+
+    const settlementLogs = await retryRpc(
+      'SettlementFlushed event search',
+      () => publicClient.getLogs({
+        address: GIWA.vault,
+        event: settlementFlushedEvent,
+        fromBlock,
+        toBlock: 'latest',
+      }),
+    );
+
+    const logs = settlementLogs.filter(
+      (log) =>
+        log.args?.paycardId?.toLowerCase() ===
+        pact.openRails.paycardId.toLowerCase(),
+    );
+
+    logs.sort((left, right) => {
+      const leftBlock = left.blockNumber ?? 0n;
+      const rightBlock = right.blockNumber ?? 0n;
+
+      if (leftBlock !== rightBlock) {
+        return leftBlock < rightBlock ? -1 : 1;
+      }
+
+      return Number(left.logIndex ?? 0) -
+        Number(right.logIndex ?? 0);
+    });
+
+    const recorded = new Set(
+      existingSettlements.map((entry) =>
+        entry.transactionHash.toLowerCase()
+      )
+    );
+
+    const recovered = [];
+
+    for (const log of logs) {
+      const transactionHash =
+        log.transactionHash;
+
+      if (
+        !transactionHash ||
+        recorded.has(transactionHash.toLowerCase())
+      ) {
+        continue;
+      }
+
+      const receipt = await retryRpc(
+        'recoverable settlement receipt',
+        () => publicClient.getTransactionReceipt({
+          hash: transactionHash,
+        }),
+      );
+
+      if (receipt.status !== 'success') {
+        continue;
+      }
+
+      let settledAmount = 0n;
+
+      for (const receiptLog of receipt.logs) {
+        if (
+          receiptLog.address.toLowerCase() !==
+          GIWA.vault.toLowerCase()
+        ) {
+          continue;
+        }
+
+        try {
+          const decoded = decodeEventLog({
+            abi: vaultAbi,
+            data: receiptLog.data,
+            topics: receiptLog.topics,
+          });
+
+          if (
+            decoded.eventName ===
+              'SettlementFlushed' &&
+            decoded.args.paycardId.toLowerCase() ===
+              pact.openRails.paycardId.toLowerCase()
+          ) {
+            settledAmount +=
+              decoded.args.amountWithdrawn;
+          }
+        } catch {
+          // Ignore unrelated Vault events.
+        }
+      }
+
+      if (settledAmount === 0n) {
+        continue;
+      }
+
+      pact = await kernel.recordPactSettlement({
+        pactId: pact.pactId,
+        actor: sessionAddress,
+        txHash: transactionHash,
+        settledAmountBaseUnits:
+          settledAmount.toString(),
+      });
+
+      recorded.add(transactionHash.toLowerCase());
+
+      recovered.push({
+        transactionHash,
+        settledAmountBaseUnits:
+          settledAmount.toString(),
+        final: pact.status === 'settled',
+        alreadyRecorded: false,
+      });
+    }
+
+    const latestCard = await retryRpc(
+      'current GIWA Paycard state',
+      () => readRegistry(
+        pact.openRails.paycardId,
+      ),
+    );
+
+    const chainFinal =
+      Number(latestCard.operationalStatus) === 1 ||
+      latestCard.availableBalance === 0n;
+
+    return send(res, 200, {
+      pact,
+      recovered,
+      chainFinal,
+      broadcastAllowed:
+        !chainFinal &&
+        pact.status !== 'settled',
+    });
+  }
+
   if (method === 'POST' && pathname === '/api/live/settlements/record') {
     await assertPactSession(input.pactId, sessionAddress);
     if (!sameAddress(input.actor, sessionAddress)) throw new Error('Settlement actor must match the authenticated wallet');
     const state = await kernel.state();
     const proofApproved = Object.values(state.verificationDecisions).some((entry) => entry.pactId === input.pactId && entry.decision === 'approved');
     if (!proofApproved) throw new Error('An approved Proof checkpoint is required before settlement can be recorded');
-    return send(res, 200, await kernel.recordPactSettlement(input));
+    return send(
+      res,
+      200,
+      await kernel.recordPactSettlement({
+        pactId: input.pactId,
+        actor: input.actor,
+        txHash: input.txHash,
+        settledAmountBaseUnits:
+          input.settledAmountBaseUnits,
+      }),
+    );
   }
 
   return send(res, 404, { error: 'not_found' });

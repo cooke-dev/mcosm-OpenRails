@@ -1,0 +1,510 @@
+.paycard-stage {
+  margin: 38px 0 34px;
+  padding-top: 24px;
+  border-top: 1px solid #d8d4cc;
+}
+
+.paycard-stage-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+
+.paycard-stage-header span,
+.paycard-instrument span,
+.paycard-instrument small,
+.paycard-receipt span,
+.paycard-receipt small,
+.paycard-inspector span,
+.paycard-inspector dt {
+  font-family: var(--font-mono, "Doto", monospace);
+  letter-spacing: 0.1em;
+}
+
+.paycard-stage-header span {
+  color: #d96543;
+  font-size: 11px;
+}
+
+.paycard-stage-header h4 {
+  max-width: 620px;
+  margin: 8px 0 0;
+  font-family: var(--font-sans, "Inter Tight", sans-serif);
+  font-size: clamp(22px, 3vw, 34px);
+  font-weight: 500;
+  line-height: 1;
+}
+
+.paycard-stage-header button,
+.paycard-inspector button {
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid #0b0a09;
+  border-radius: 999px;
+  background: transparent;
+  color: #0b0a09;
+  font-family: var(--font-mono, "Doto", monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.paycard-stage-header button:hover,
+.paycard-inspector button:hover {
+  background: #0b0a09;
+  color: #fff;
+}
+
+.paycard-instrument {
+  position: relative;
+  display: flex;
+  width: min(100%, 760px);
+  min-height: 430px;
+  margin: 0 auto;
+  padding: clamp(24px, 4vw, 42px);
+  overflow: hidden;
+  flex-direction: column;
+  justify-content: space-between;
+  border: 1px solid #0b0a09;
+  border-radius: 30px;
+  background: #fff;
+  color: #0b0a09;
+  box-shadow: 0 24px 55px rgba(11, 10, 9, 0.09);
+}
+
+.paycard-instrument.is-opening,
+.paycard-instrument.is-earning,
+.paycard-instrument.is-eligible,
+.paycard-instrument.is-held {
+  border-color: #d96543;
+}
+
+.paycard-live-signal {
+  position: absolute;
+  top: 0;
+  left: -22%;
+  width: 22%;
+  height: 3px;
+  background: #d96543;
+  animation: paycard-live-signal 2.4s linear infinite;
+}
+
+@keyframes paycard-live-signal {
+  to {
+    transform: translateX(560%);
+  }
+}
+
+.paycard-topline,
+.paycard-value-row,
+.paycard-metrics,
+.paycard-parties,
+.paycard-instrument footer {
+  display: flex;
+}
+
+.paycard-topline {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.paycard-topline > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.paycard-topline strong {
+  font-family: var(--font-sans, "Inter Tight", sans-serif);
+  font-size: 16px;
+}
+
+.paycard-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid #0b0a09;
+  border-radius: 11px;
+  font-size: 11px;
+}
+
+.paycard-state {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  text-align: right;
+}
+
+.paycard-state span {
+  font-size: 12px;
+  color: #d96543;
+}
+
+.paycard-instrument.is-settled .paycard-state span {
+  color: #0b0a09;
+}
+
+.paycard-state small {
+  margin-top: 5px;
+  color: #9c9992;
+  font-size: 9px;
+}
+
+.paycard-balance {
+  margin: 26px 0 20px;
+}
+
+.paycard-balance strong {
+  font-family: var(--font-sans, "Inter Tight", sans-serif);
+  font-size: clamp(54px, 8vw, 92px);
+  font-weight: 480;
+  letter-spacing: -0.055em;
+  line-height: 0.85;
+}
+
+.paycard-balance > span {
+  margin-left: 12px;
+  color: #4e4b47;
+  font-size: 15px;
+}
+
+.paycard-balance small {
+  display: block;
+  margin-top: 13px;
+  color: #9c9992;
+  font-size: 10px;
+}
+
+.paycard-progress {
+  margin: 4px 0 22px;
+}
+
+.paycard-progress-track {
+  position: relative;
+  height: 9px;
+  border: 1px solid #0b0a09;
+  border-radius: 999px;
+  background: #f3f1ec;
+}
+
+.paycard-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #d96543;
+}
+
+.paycard-instrument.is-settled .paycard-progress-track span {
+  background: #0b0a09;
+}
+
+.paycard-progress-track i {
+  position: absolute;
+  top: 50%;
+  width: 17px;
+  height: 17px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #d96543;
+  box-shadow: 0 0 0 1px #0b0a09;
+  transform: translate(-50%, -50%);
+}
+
+.paycard-instrument.is-settled .paycard-progress-track i {
+  background: #0b0a09;
+}
+
+.paycard-progress-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: #9c9992;
+  font-family: var(--font-mono, "Doto", monospace);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.paycard-progress-labels strong {
+  color: #4e4b47;
+  font-size: inherit;
+}
+
+.paycard-value-row {
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.paycard-value-row > div:last-child {
+  text-align: right;
+}
+
+.paycard-value-row span,
+.paycard-metrics span,
+.paycard-parties span {
+  display: block;
+  margin-bottom: 5px;
+  color: #9c9992;
+  font-size: 9px;
+}
+
+.paycard-value-row strong {
+  font-family: var(--font-sans, "Inter Tight", sans-serif);
+  font-size: 17px;
+}
+
+.paycard-metrics {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  border-top: 1px solid #d8d4cc;
+  border-bottom: 1px solid #d8d4cc;
+}
+
+.paycard-metrics > div {
+  padding: 16px 16px 16px 0;
+}
+
+.paycard-metrics > div + div {
+  padding-left: 16px;
+  border-left: 1px solid #d8d4cc;
+}
+
+.paycard-metrics strong,
+.paycard-parties strong {
+  font-family: var(--font-mono, "Doto", monospace);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.paycard-parties {
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 0 12px;
+}
+
+.paycard-parties > div:last-child {
+  text-align: right;
+}
+
+.paycard-parties i {
+  flex: 1;
+  color: #d96543;
+  font-style: normal;
+  text-align: center;
+}
+
+.paycard-instrument footer {
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: auto;
+  padding-top: 13px;
+  border-top: 1px solid #d8d4cc;
+  color: #4e4b47;
+  font-family: var(--font-mono, "Doto", monospace);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.paycard-instrument footer code {
+  color: #0b0a09;
+  font-family: inherit;
+}
+
+.paycard-receipts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 16px;
+  border: 1px solid #d8d4cc;
+}
+
+.paycard-receipt {
+  min-width: 0;
+  padding: 17px;
+  background: #f8f7f4;
+}
+
+.paycard-receipt + .paycard-receipt {
+  border-left: 1px solid #d8d4cc;
+}
+
+.paycard-receipt span {
+  display: block;
+  color: #d96543;
+  font-size: 9px;
+}
+
+.paycard-receipt strong {
+  display: block;
+  margin: 9px 0;
+  font-family: var(--font-sans, "Inter Tight", sans-serif);
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.paycard-receipt code,
+.paycard-receipt a {
+  display: block;
+  overflow: hidden;
+  color: #0b0a09;
+  font-family: var(--font-mono, "Doto", monospace);
+  font-size: 9px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paycard-receipt small {
+  display: block;
+  margin-top: 9px;
+  color: #9c9992;
+  font-size: 8px;
+}
+
+.paycard-receipt.is-confirmed span,
+.paycard-receipt.is-approved span {
+  color: #0b0a09;
+}
+
+.paycard-inspector-backdrop {
+  position: fixed;
+  z-index: 300;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(11, 10, 9, 0.42);
+}
+
+.paycard-inspector {
+  width: min(600px, 92vw);
+  height: 100%;
+  overflow-y: auto;
+  border-left: 1px solid #0b0a09;
+  background: #f3f1ec;
+  box-shadow: -24px 0 60px rgba(11, 10, 9, 0.15);
+}
+
+.paycard-inspector header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 28px;
+  border-bottom: 1px solid #d8d4cc;
+  background: #fff;
+}
+
+.paycard-inspector header span {
+  color: #d96543;
+  font-size: 9px;
+}
+
+.paycard-inspector header h3 {
+  margin: 7px 0 0;
+  font-family: var(--font-sans, "Inter Tight", sans-serif);
+  font-size: 28px;
+  font-weight: 500;
+}
+
+.paycard-inspector dl {
+  margin: 0;
+}
+
+.paycard-inspector dl > div {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 20px;
+  padding: 20px 28px;
+  border-bottom: 1px solid #d8d4cc;
+}
+
+.paycard-inspector dt {
+  color: #9c9992;
+  font-size: 9px;
+}
+
+.paycard-inspector dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, "Doto", monospace);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.paycard-inspector a {
+  color: #0b0a09;
+}
+
+@media (max-width: 800px) {
+  .paycard-stage-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .paycard-instrument {
+    min-height: 0;
+    border-radius: 22px;
+  }
+
+  .paycard-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .paycard-metrics > div + div {
+    padding-left: 0;
+    border-top: 1px solid #d8d4cc;
+    border-left: 0;
+  }
+
+  .paycard-receipts {
+    grid-template-columns: 1fr;
+  }
+
+  .paycard-receipt + .paycard-receipt {
+    border-top: 1px solid #d8d4cc;
+    border-left: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .paycard-topline,
+  .paycard-parties,
+  .paycard-instrument footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .paycard-state,
+  .paycard-parties > div:last-child {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .paycard-parties i {
+    flex: initial;
+    transform: rotate(90deg);
+  }
+
+  .paycard-inspector {
+    width: 100%;
+  }
+
+  .paycard-inspector dl > div {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paycard-live-signal {
+    animation: none;
+  }
+}

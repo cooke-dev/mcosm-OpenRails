@@ -27,6 +27,12 @@ import {
   type LiveAccount,
 } from '../lib/openrails';
 import { useWallet, type TypedDataEnvelope } from '../lib/wallet';
+import {
+  PaycardInstrument,
+  type PaycardPact,
+  type PaycardVerificationDecision,
+} from './paycard/PaycardInstrument';
+import './paycard/paycard.css';
 
 type Phase = 'idle' | 'funded' | 'authority' | 'allowed' | 'pact' | 'opened' | 'proved' | 'settled';
 type Activity = { at: string; label: string; source: 'WALLET' | 'KERNEL' | 'BAPHOMET' | 'GIWA' | 'PROOF'; status: 'pending' | 'complete' | 'error' };
@@ -48,25 +54,20 @@ type KernelState = {
   agents: Array<{ agentId: string }>;
   paths: Array<{ artifact: { pathId: string } }>;
   plugins: Array<{ pluginId: string; pluginVersion: string }>;
+  decisions: Array<{
+    proposalId: string;
+    decisionId: string;
+    decisionHash: Hex;
+    result: string;
+    reasonCodes: string[];
+    evaluatedAt: string;
+  }>;
   pacts: Pact[];
-  verificationDecisions: Array<{ pactId: string; decision: string }>;
+  verificationDecisions: PaycardVerificationDecision[];
   events: Array<Record<string, unknown>>;
 };
 
-type Pact = {
-  pactId: string;
-  workspaceId: string;
-  pathId: string;
-  termsHash: Hex;
-  counterparty: Address;
-  paymentTerms: {
-    maximumAllocationBaseUnits: string;
-    velocityBaseUnitsPerSecond: string;
-    lifespanSeconds: number;
-  };
-  status: string;
-  openRails?: { paycardId: Hex; metadataHash: Hex; openingTxHash?: Hash };
-};
+type Pact = PaycardPact;
 
 type PaymentDraft = {
   pactId: string;
@@ -102,6 +103,29 @@ function deterministicIds(address: Address) {
   return { workspaceId: `gasok-${stem}`, agentId: `agent-${stem}`, pathId: `path-${stem}` };
 }
 
+function phaseFromPact(
+  pact: Pact,
+  proof?: PaycardVerificationDecision,
+): Phase {
+  if (pact.status === 'settled') return 'settled';
+
+  if (
+    proof?.decision === 'approved' ||
+    ['performing', 'completed'].includes(pact.status)
+  ) {
+    return 'proved';
+  }
+
+  if (
+    pact.openRails?.openingTxHash ||
+    ['active'].includes(pact.status)
+  ) {
+    return 'opened';
+  }
+
+  return 'pact';
+}
+
 export function LiveVerticalSlice() {
   const { address, chainId, connecting, authenticating, sessionAddress, connect, ensureSession, publicClient, signTypedData, walletClient } = useWallet();
   const [account, setAccount] = useState<LiveAccount>();
@@ -109,6 +133,8 @@ export function LiveVerticalSlice() {
   const [pact, setPact] = useState<Pact>();
   const [decision, setDecision] = useState<Record<string, unknown>>();
   const [blockedDecision, setBlockedDecision] = useState<Record<string, unknown>>();
+  const [proofDecision, setProofDecision] =
+    useState<PaycardVerificationDecision>();
   const [activity, setActivity] = useState<Activity[]>([]);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -143,6 +169,103 @@ export function LiveVerticalSlice() {
     if (!address || !memory) return;
     localStorage.setItem(`openrails-live-${address.toLowerCase()}`, JSON.stringify(memory));
   }, [address, memory]);
+
+  useEffect(() => {
+    if (
+      !sessionAddress ||
+      !memory?.workspaceId ||
+      !memory.pactId
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const restoreCanonicalRun = async () => {
+      const state = await api<KernelState>(
+        `/api/live/state/${memory.workspaceId}`
+      );
+
+      const restoredPact = state.pacts.find(
+        (item) => item.pactId === memory.pactId
+      );
+
+      if (!restoredPact || cancelled) return;
+
+      const restoredDecision = state.decisions.find(
+        (item) =>
+          item.decisionId === restoredPact.decisionId ||
+          item.proposalId === restoredPact.proposalId
+      );
+
+      const restoredBlockedDecision = [...state.decisions]
+        .filter((item) => item.result === 'BLOCK')
+        .sort(
+          (left, right) =>
+            Date.parse(left.evaluatedAt) -
+            Date.parse(right.evaluatedAt)
+        )
+        .at(-1);
+
+      const restoredProof =
+        state.verificationDecisions.find(
+          (item) => item.pactId === restoredPact.pactId
+        );
+
+      const latestSettlement =
+        restoredPact.openRails?.settlements?.at(-1);
+
+      setPact(restoredPact);
+      setDecision(restoredDecision);
+      setBlockedDecision(restoredBlockedDecision);
+      setProofDecision(restoredProof);
+
+      setMemory((current) =>
+        current
+          ? {
+              ...current,
+              proposalId:
+                restoredPact.proposalId ??
+                current.proposalId,
+              pactId: restoredPact.pactId,
+              paycardId:
+                restoredPact.openRails?.paycardId ??
+                current.paycardId,
+              openingTxHash:
+                restoredPact.openRails?.openingTxHash ??
+                current.openingTxHash,
+              settlementTxHash:
+                latestSettlement?.transactionHash ??
+                current.settlementTxHash,
+              genesisTimestamp:
+                restoredPact.openRails?.genesisTimestamp ??
+                current.genesisTimestamp,
+              phase: phaseFromPact(
+                restoredPact,
+                restoredProof,
+              ),
+            }
+          : current
+      );
+    };
+
+    void restoreCanonicalRun().catch((value) => {
+      if (!cancelled) {
+        console.error(
+          'Could not restore canonical Paycard state',
+          value,
+        );
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    memory?.pactId,
+    memory?.workspaceId,
+    sessionAddress,
+  ]);
 
   useEffect(() => {
     const update = () => {
@@ -432,27 +555,176 @@ export function LiveVerticalSlice() {
     const result = await api<{ decision: { decision: string; decisionHash: Hex; reasonCodes: string[] }; pact: Pact }>('/api/live/checkpoints/submit-and-verify', { method: 'POST', body: JSON.stringify({ checkpoint: { ...prepared.checkpoint, signature } }) });
     if (result.decision.decision !== 'approved') throw new Error(`Proof was not approved: ${result.decision.reasonCodes.join(', ')}`);
     setPact(result.pact);
+    setProofDecision({
+      pactId: result.pact.pactId,
+      ...result.decision,
+    });
     setMemory((current) => current ? { ...current, phase: 'proved' } : current);
     add(`GIWA activation Proof approved · ${short(result.decision.decisionHash)}`, 'PROOF');
   });
 
   const settle = () => run('settle', async () => {
-    if (!address || !memory?.pactId || !memory.paycardId) throw new Error('Complete the opening and Proof steps first.');
+    if (
+      !address ||
+      !memory?.pactId ||
+      !memory.paycardId
+    ) {
+      throw new Error(
+        'Complete the opening and Proof steps first.'
+      );
+    }
+
     await ensureSession();
-    if (remaining > 0) throw new Error(`The accelerated flow becomes fully earned in ${remaining}s.`);
+
+    if (remaining > 0) {
+      throw new Error(
+        `The accelerated flow becomes fully earned in ${remaining}s.`
+      );
+    }
+
+    add(
+      'Checking GIWA for a previously submitted settlement',
+      'GIWA',
+      'pending',
+    );
+
+    const recovery = await api<{
+      pact: Pact;
+      recovered: Array<{
+        transactionHash: Hash;
+        settledAmountBaseUnits: string;
+        final: boolean;
+        alreadyRecorded: boolean;
+      }>;
+      chainFinal: boolean;
+      broadcastAllowed: boolean;
+    }>('/api/live/settlements/recover', {
+      method: 'POST',
+      body: JSON.stringify({
+        pactId: memory.pactId,
+      }),
+    });
+
+    const recoveredSettlement =
+      recovery.recovered.at(-1);
+
+    if (recoveredSettlement) {
+      const final =
+        recovery.pact.status === 'settled' ||
+        recoveredSettlement.final;
+
+      setPact(recovery.pact);
+
+      setMemory((current) =>
+        current
+          ? {
+              ...current,
+              settlementTxHash:
+                recoveredSettlement.transactionHash,
+              phase: final ? 'settled' : 'proved',
+            }
+          : current
+      );
+
+      add(
+        `${formatOrUsd(
+          BigInt(
+            recoveredSettlement.settledAmountBaseUnits
+          )
+        )} settlement recovered and canonically observed${
+          final ? ' · FINAL' : ' · PARTIAL'
+        }`,
+        'GIWA',
+      );
+
+      await refreshAccount();
+      return;
+    }
+
+    if (!recovery.broadcastAllowed) {
+      setPact(recovery.pact);
+
+      throw new Error(
+        recovery.chainFinal
+          ? 'The Paycard is already final on GIWA. No additional settlement transaction was submitted.'
+          : 'Settlement broadcasting is currently blocked.'
+      );
+    }
+
     const client = await walletClient();
-    add('Settlement transaction submitted', 'WALLET', 'pending');
-    const hash = await client.writeContract({ account: address, address: GIWA.contracts.vault, abi: vaultAbi, functionName: 'processDripSettle', args: [memory.paycardId] });
-    const receipt = await waitForCanonicalReceipt(hash);
-    const amount = settledAmount(receipt, memory.paycardId);
-    if (amount === 0n) throw new Error('No settlement amount was emitted. Wait for the flow window and retry.');
-    const card = await publicClient.readContract({ address: GIWA.contracts.vault, abi: vaultAbi, functionName: 'registry', args: [memory.paycardId] });
-    const final = Number(card[10]) === 1 || card[4] === 0n;
-    const settledPact = await api<Pact>('/api/live/settlements/record', { method: 'POST', body: JSON.stringify({ pactId: memory.pactId, actor: address, txHash: hash, settledAmountBaseUnits: amount.toString(), final }) });
+
+    add(
+      'Settlement transaction submitted',
+      'WALLET',
+      'pending',
+    );
+
+    const hash = await client.writeContract({
+      account: address,
+      address: GIWA.contracts.vault,
+      abi: vaultAbi,
+      functionName: 'processDripSettle',
+      args: [memory.paycardId],
+    });
+
+    const receipt =
+      await waitForCanonicalReceipt(hash);
+
+    const amount =
+      settledAmount(receipt, memory.paycardId);
+
+    if (amount === 0n) {
+      throw new Error(
+        'No settlement amount was emitted. Wait for the flow window and retry.'
+      );
+    }
+
+    const settledPact = await api<Pact>(
+      '/api/live/settlements/record',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          pactId: memory.pactId,
+          actor: address,
+          txHash: hash,
+          settledAmountBaseUnits:
+            amount.toString(),
+        }),
+      }
+    );
+
+    const final =
+      settledPact.status === 'settled';
+
     setPact(settledPact);
-    setMemory((current) => current ? { ...current, settlementTxHash: hash, phase: final ? 'settled' : 'proved' } : current);
-    add(`${formatOrUsd(amount)} settled and canonically observed${final ? ' · FINAL' : ' · PARTIAL'}`, 'GIWA');
-    if (!final) add('Paycard remains active; run settlement again after the final horizon', 'GIWA', 'pending');
+
+    setMemory((current) =>
+      current
+        ? {
+            ...current,
+            settlementTxHash: hash,
+            phase: final ? 'settled' : 'proved',
+          }
+        : current
+    );
+
+    add(
+      `${formatOrUsd(
+        amount
+      )} settled and canonically observed${
+        final ? ' · FINAL' : ' · PARTIAL'
+      }`,
+      'GIWA',
+    );
+
+    if (!final) {
+      add(
+        'Paycard remains active; settle again after the final horizon',
+        'GIWA',
+        'pending',
+      );
+    }
+
     await refreshAccount();
   });
 
@@ -460,12 +732,21 @@ export function LiveVerticalSlice() {
     if (!address) return;
     const ids = deterministicIds(address);
     const next: RunMemory = { ...ids, phase: 'authority' };
-    setMemory(next); setPact(undefined); setDecision(undefined); setBlockedDecision(undefined); setActivity([]); setError('');
+    setMemory(next); setPact(undefined); setDecision(undefined); setBlockedDecision(undefined); setProofDecision(undefined); setActivity([]); setError('');
   };
 
   const accountSummary = useMemo(() => account ? [
     ['orUSD', formatOrUsd(account.orUsdBalance)], ['GIWA GAS', formatNative(account.nativeBalance)], ['FAUCET', account.canClaim ? 'AVAILABLE' : 'COOLDOWN'], ['BLOCK', account.blockNumber.toString()],
   ] : [], [account]);
+
+  const paycardRecordStatus =
+    pact?.status === 'settled'
+      ? 'SETTLED'
+      : memory?.openingTxHash
+        ? 'OPEN'
+        : pact
+          ? 'PREPARED'
+          : 'NOT OPEN';
 
   return (
     <section className="live-slice" aria-labelledby="live-slice-title">
@@ -506,11 +787,20 @@ export function LiveVerticalSlice() {
 
           <AnimatePresence>{error && <motion.div className="live-error" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}><span>EXECUTION STOPPED</span><strong>{error}</strong><button onClick={() => setError('')}>Dismiss</button></motion.div>}</AnimatePresence>
 
+          {pact && phaseIndex >= 3 && (
+            <PaycardInstrument
+              pact={pact}
+              remaining={remaining}
+              verificationDecision={proofDecision}
+              explorerUrl={GIWA.explorerUrl}
+            />
+          )}
+
           <div className="live-records">
             <article><span>BAPHOMET DECISION</span><strong>{decision ? String(decision.result) : 'NOT RUN'}</strong><code>{decision ? short(String(decision.decisionHash)) : '—'}</code></article>
             <article><span>BLOCKED CONTROL</span><strong>{blockedDecision ? String(blockedDecision.result) : 'READY'}</strong><code>{blockedDecision ? String(blockedDecision.reasonCodes) : 'MAX 1,000 orUSD'}</code></article>
             <article><span>PACT</span><strong>{pact?.status?.toUpperCase() ?? 'NOT FORMED'}</strong><code>{pact ? short(pact.termsHash) : '—'}</code></article>
-            <article><span>PAYCARD</span><strong>{memory?.paycardId ? 'BOUND' : 'NOT OPEN'}</strong><code>{short(memory?.paycardId)}</code></article>
+            <article><span>PAYCARD</span><strong>{paycardRecordStatus}</strong><code>{short(memory?.paycardId)}</code></article>
             <article><span>OPENING RECEIPT</span><strong>{memory?.openingTxHash ? 'CONFIRMED' : 'PENDING'}</strong>{memory?.openingTxHash ? <a href={`${GIWA.explorerUrl}/tx/${memory.openingTxHash}`} target="_blank" rel="noreferrer">{short(memory.openingTxHash)} ↗</a> : <code>—</code>}</article>
             <article><span>SETTLEMENT RECEIPT</span><strong>{memory?.settlementTxHash ? 'CONFIRMED' : 'PENDING'}</strong>{memory?.settlementTxHash ? <a href={`${GIWA.explorerUrl}/tx/${memory.settlementTxHash}`} target="_blank" rel="noreferrer">{short(memory.settlementTxHash)} ↗</a> : <code>—</code>}</article>
           </div>
