@@ -62,7 +62,7 @@ The fresh GIWA web application lives at [`apps/gasok-web`](apps/gasok-web).
 | `/build` | Runtime architecture, SDK, MCP, schemas, and integration boundaries. |
 | `/docs` | Product and technical operating manual. |
 
-The legacy Arc Cockpit remains in the repository for migration history and compatibility. It is **not** the canonical GIWA product surface.
+Legacy network-specific implementations remain for migration history and compatibility. They are **not** the canonical GIWA product surface.
 
 ### Live Run
 
@@ -176,7 +176,7 @@ mcp/                             Safe read-and-prepare MCP tools
 packages/openrails-design-system Shared visual tokens and design primitives
 deployments/                     Canonical GIWA deployment registries
 docs/                            Architecture, trust model, runbooks, and product specifications
-cockpit/                         Legacy Arc surface; not the GIWA application
+cockpit/                         Legacy compatibility surface; not the GIWA application
 ```
 
 ---

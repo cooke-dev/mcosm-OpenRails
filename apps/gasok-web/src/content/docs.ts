@@ -271,13 +271,13 @@ export const docsPages: DocPage[] = [
   {
     slug: 'networks', category: 'NETWORK', index: '17', title: 'Networks and deployment', status: 'LIVE',
     summary: 'OpenRails is network portable. The product language remains stable while deployment evidence comes from each configured network.',
-    oneSentence: 'One OpenRails design and object model can operate across GIWA, Arc, and later compatible networks.',
+    oneSentence: 'One OpenRails design and object model can operate across GIWA and later compatible networks.',
     creates: 'A network adapter layer for chain identity, assets, contracts, events, and receipts.',
     doesNot: 'Fork the product story, colors, primitives, or information architecture for every chain.',
     sections: [
       { id: 'portable-core', title: 'Portable core', body: ['Workspace, Path, proposal, Pact, Proof, RailsCard, RailsFlow, Paycard, settlement, and resolution are OpenRails concepts. They must remain stable across networks.', 'A network deployment supplies chain identity, RPC connectivity, assets, contracts, events, and explorer evidence.'], diagram: 'network', diagramCaption: 'The portable core remains constant while the deployment adapter changes.' },
       { id: 'adapter', title: 'Network adapter', properties: [['Identity', 'Name, chain ID, and native gas symbol.'], ['Connectivity', 'RPC and explorer URLs.'], ['Assets', 'Settlement assets and decimals.'], ['Contracts', 'Factory, hub, vault, faucet, and related addresses.'], ['Evidence', 'Events, receipts, block status, and provenance links.'], ['Wallet hints', 'Network switching and gas requirements.']] },
-      { id: 'current', title: 'Current demonstrator', callout: 'The current live System Lab is configured for GIWA Sepolia.', body: ['Arc and later networks reuse the same design system, docs structure, lifecycle language, Runtime concepts, and dashboard components through separate deployment adapters.'] }
+      { id: 'current', title: 'Current demonstrator', callout: 'The current live System Lab is configured for GIWA Sepolia.', body: ['Later compatible networks reuse the same design system, docs structure, lifecycle language, Runtime concepts, and dashboard components through separate deployment adapters.'] }
     ]
   },
   {

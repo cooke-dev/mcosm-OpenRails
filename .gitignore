@@ -21,7 +21,7 @@ HANDOFF.md
 docs/openrails_roadmap.md
 docs/v1_release_notes.md
 docs/dashboard_frontend_and_endpoints.md
-# Contains a private Arc RPC auth token — never commit
+# Local status material may contain private RPC credentials — never commit
 docs/canteen_cli_status.md
 # Local pickup/handoff briefing — not part of the shipped package
 docs/project_state_and_handoff.md
@@ -49,7 +49,7 @@ experiments/traction-bots/metrics.json
 # npm pack tarballs (generated)
 *.tgz
 
-# Generated image assets (root-level scratch folder only — cockpit/public/assets/ is real, tracked source)
+# Generated root-level image assets; application assets remain tracked source
 /assets/
 
 # Local video/guides/logo assets

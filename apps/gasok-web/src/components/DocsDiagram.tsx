@@ -67,7 +67,7 @@ function ProtocolRuntimeDiagram() {
         <div><Node title="RAILSCARD" tone="dark" /><Node title="RAILSFLOW" tone="dark" /><Node title="PAYCARD" tone="dark" /><Node title="STN-DELTA" tone="dark" /><Node title="VAULT" tone="dark" /></div>
       </div>
       <Arrow vertical label="canonical receipt" />
-      <Node eyebrow="NETWORK" title="GIWA / ARC / EVM ADAPTER" detail="CONTRACTS, EVENTS, RECEIPTS" tone="signal" className="diagram-network-node" />
+      <Node eyebrow="NETWORK" title="GIWA / EVM ADAPTER" detail="CONTRACTS, EVENTS, RECEIPTS" tone="signal" className="diagram-network-node" />
     </div>
   );
 }
@@ -253,7 +253,7 @@ function NetworkDiagram() {
       <Arrow vertical label="network adapter" />
       <div className="network-adapter-doc">{['CHAIN ID', 'RPC', 'EXPLORER', 'ASSETS', 'CONTRACTS', 'EVENTS'].map((item) => <span key={item}>{item}</span>)}</div>
       <Arrow vertical label="deployment" />
-      <div className="network-targets"><Node eyebrow="LIVE DEMO" title="GIWA SEPOLIA" detail="CHAIN 91342" tone="signal" /><Node eyebrow="REUSABLE" title="ARC" detail="NETWORK CONFIG" /><Node eyebrow="FUTURE" title="OTHER EVM" detail="ADAPTER" /></div>
+      <div className="network-targets"><Node eyebrow="LIVE DEMO" title="GIWA SEPOLIA" detail="CHAIN 91342" tone="signal" /><Node eyebrow="REUSABLE" title="CONFIGURED EVM" detail="NETWORK ADAPTER" /><Node eyebrow="FUTURE" title="OTHER EVM" detail="ADAPTER" /></div>
     </div>
   );
 }
